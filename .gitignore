@@ -1,0 +1,8 @@
+/result
+/dist
+/.direnv
+/wallforge
+*.test
+*.out
+.DS_Store
+CLAUDE.md
