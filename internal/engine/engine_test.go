@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/vaniello/wallforge/internal/config"
 )
 
 func TestDetect_PlainFiles(t *testing.T) {
@@ -105,6 +107,7 @@ func TestDetect_BareDirFails(t *testing.T) {
 }
 
 func TestSelect_AllKinds(t *testing.T) {
+	cfg := config.Default()
 	cases := []struct {
 		kind Kind
 		want string
@@ -114,7 +117,7 @@ func TestSelect_AllKinds(t *testing.T) {
 		{KindScene, "linux-wallpaperengine"},
 	}
 	for _, c := range cases {
-		b, err := Select(Target{Kind: c.kind})
+		b, err := Select(Target{Kind: c.kind}, cfg)
 		if err != nil {
 			t.Errorf("Select(%s): unexpected error %v", c.kind, err)
 			continue

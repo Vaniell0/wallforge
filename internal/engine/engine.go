@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/vaniello/wallforge/internal/config"
 	"github.com/vaniello/wallforge/internal/workshop"
 )
 
@@ -107,25 +108,29 @@ func kindFromWorkshopType(t workshop.Type) (Kind, error) {
 	return 0, fmt.Errorf("unknown workshop type %q", t)
 }
 
-// Select returns the backend that handles the given Target.
-// Returns an error if no backend supports its Kind yet.
-func Select(t Target) (Backend, error) {
+// Select returns the backend that handles the given Target, configured
+// from cfg. Returns an error if no backend supports its Kind yet.
+func Select(t Target, cfg config.Config) (Backend, error) {
 	switch t.Kind {
 	case KindImage:
-		return NewSwww(), nil
+		return NewSwww(cfg.Swww), nil
 	case KindVideo:
-		return NewMpvpaper(), nil
+		return NewMpvpaper(cfg.Mpvpaper), nil
 	case KindScene:
-		return NewWallpaperEngine(), nil
+		return NewWallpaperEngine(cfg.Wpe), nil
 	}
 	return nil, fmt.Errorf("no backend for kind %s", t.Kind)
 }
 
 // StopAll attempts to stop every backend. Errors from individual backends
 // are collected but do not abort the sequence.
-func StopAll() []error {
+func StopAll(cfg config.Config) []error {
 	var errs []error
-	for _, b := range []Backend{NewSwww(), NewMpvpaper(), NewWallpaperEngine()} {
+	for _, b := range []Backend{
+		NewSwww(cfg.Swww),
+		NewMpvpaper(cfg.Mpvpaper),
+		NewWallpaperEngine(cfg.Wpe),
+	} {
 		if err := b.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", b.Name(), err))
 		}

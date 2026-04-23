@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"syscall"
+
+	"github.com/vaniello/wallforge/internal/config"
 )
 
 // Mpvpaper drives the `mpvpaper` tool for video and GIF wallpapers.
@@ -13,19 +15,12 @@ import (
 // foreground process that must be detached (setsid) and re-spawned on every
 // Apply. Stop uses `pkill` to terminate any running mpvpaper instances.
 type Mpvpaper struct {
-	// Target accepts "*", "ALL", a monitor name, or a comma-separated list.
-	// Default "*" renders on every output.
-	Target string
-
-	// MpvOpts is forwarded verbatim to mpv via `-o`.
-	MpvOpts string
+	target  string
+	mpvOpts string
 }
 
-func NewMpvpaper() *Mpvpaper {
-	return &Mpvpaper{
-		Target:  "*",
-		MpvOpts: "no-audio --loop-file=inf --panscan=1.0",
-	}
+func NewMpvpaper(cfg config.MpvpaperConfig) *Mpvpaper {
+	return &Mpvpaper{target: cfg.Target, mpvOpts: cfg.MpvOpts}
 }
 
 func (m *Mpvpaper) Name() string { return "mpvpaper" }
@@ -37,12 +32,12 @@ func (m *Mpvpaper) Apply(path string) error {
 
 	args := []string{
 		"-f",                // fork into background after window attach
-		"-o", m.MpvOpts,
+		"-o", m.mpvOpts,
 	}
-	if m.Target == "" {
+	if m.target == "" {
 		args = append(args, "*")
 	} else {
-		args = append(args, m.Target)
+		args = append(args, m.target)
 	}
 	args = append(args, path)
 

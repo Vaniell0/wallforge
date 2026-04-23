@@ -25,22 +25,38 @@
           runtimeDeps = with pkgs; [
             swww
             mpvpaper
+            linux-wallpaperengine
           ];
 
-          wallforge = pkgs.buildGoModule {
+          # buildGoModule fought us over internal/* packages (insisted on
+          # -mod=vendor with no vendor dir). For a stdlib-only module,
+          # a plain stdenv + `go build` is simpler and actually works.
+          wallforge = pkgs.stdenv.mkDerivation {
             pname = "wallforge";
             version = "0.1.0-alpha";
             inherit src;
 
-            vendorHash = null;
+            nativeBuildInputs = [ pkgs.go pkgs.makeWrapper ];
 
-            subPackages = [ "cmd/wallforge" ];
+            buildPhase = ''
+              runHook preBuild
+              export HOME=$TMPDIR
+              export GOCACHE=$TMPDIR/gocache
+              export GOPATH=$TMPDIR/gopath
+              export GOFLAGS=-mod=mod
+              export GOPROXY=off
+              export GOWORK=off
+              export CGO_ENABLED=0
+              go build -trimpath -ldflags='-s -w' -o wallforge.bin ./cmd/wallforge
+              runHook postBuild
+            '';
 
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-
-            postInstall = ''
+            installPhase = ''
+              runHook preInstall
+              install -Dm755 wallforge.bin $out/bin/wallforge
               wrapProgram $out/bin/wallforge \
                 --prefix PATH : ${lib.makeBinPath runtimeDeps}
+              runHook postInstall
             '';
 
             meta = {

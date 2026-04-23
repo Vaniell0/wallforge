@@ -12,13 +12,27 @@ support is in progress.
 ## Quick start
 
 ```bash
-nix develop
-go build ./cmd/wallforge
-./wallforge apply ~/Pictures/Wallpapers/my.jpg
+nix build
+./result/bin/wallforge apply ~/Pictures/Wallpapers/my.jpg
 
-# Steam Workshop (requires linux-wallpaperengine on PATH for scene items):
-./wallforge workshop 1234567890
-./wallforge workshop "https://steamcommunity.com/sharedfiles/filedetails/?id=1234567890"
+# Steam Workshop (requires a Wallpaper Engine license and a subscription
+# in Steam — wallforge reads Steam's local cache directly):
+./result/bin/wallforge list
+./result/bin/wallforge apply 3682370294
+```
+
+## Configuration
+
+`wallforge config` prints the path and the effective values. Create
+`$XDG_CONFIG_HOME/wallforge/config.json` (usually
+`~/.config/wallforge/config.json`) to override any field, e.g.:
+
+```json
+{
+  "steam": { "root": "/mnt/games/SteamLibrary" },
+  "swww":  { "transition": "wipe", "duration": "0.8" },
+  "wpe":   { "fps": 60, "silent": false }
+}
 ```
 
 ## Supported content

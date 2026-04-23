@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os/exec"
 	"time"
+
+	"github.com/vaniello/wallforge/internal/config"
 )
 
 // Swww drives the swww fork ("awww" in nixpkgs) for static image wallpapers.
@@ -19,12 +21,12 @@ type Swww struct {
 	duration   string
 }
 
-func NewSwww() *Swww {
+func NewSwww(cfg config.SwwwConfig) *Swww {
 	return &Swww{
 		cli:        "awww",
 		daemon:     "awww-daemon",
-		transition: "grow",
-		duration:   "1.5",
+		transition: cfg.Transition,
+		duration:   cfg.Duration,
 	}
 }
 
