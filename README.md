@@ -15,6 +15,10 @@ support is in progress.
 nix develop
 go build ./cmd/wallforge
 ./wallforge apply ~/Pictures/Wallpapers/my.jpg
+
+# Steam Workshop (requires linux-wallpaperengine on PATH for scene items):
+./wallforge workshop 1234567890
+./wallforge workshop "https://steamcommunity.com/sharedfiles/filedetails/?id=1234567890"
 ```
 
 ## Supported content
