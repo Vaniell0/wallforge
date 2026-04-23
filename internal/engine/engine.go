@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/vaniello/wallforge/internal/workshop"
 )
 
 // Kind classifies wallpaper content by rendering backend.
@@ -15,7 +17,7 @@ const (
 	KindUnknown Kind = iota
 	KindImage        // png, jpg, jpeg, webp, bmp → swww
 	KindVideo        // mp4, webm, mkv, gif → mpvpaper
-	KindScene        // linux-wallpaperengine project dir (scene/web/video WE format)
+	KindScene        // linux-wallpaperengine project dir (scene/web WE format)
 )
 
 func (k Kind) String() string {
@@ -31,6 +33,17 @@ func (k Kind) String() string {
 	}
 }
 
+// Target describes a concrete wallpaper request after content detection.
+//
+// Path is the path that should be handed to the backend — this can differ
+// from the user-supplied input when a WE project directory is resolved to
+// an inner file (video-type workshop items).
+type Target struct {
+	Kind    Kind
+	Path    string
+	Project *workshop.Project // nil unless input was a WE project directory
+}
+
 // Backend renders wallpapers of a specific Kind.
 type Backend interface {
 	Name() string
@@ -38,38 +51,84 @@ type Backend interface {
 	Stop() error
 }
 
-// Detect classifies a filesystem path by its extension or contents.
-// A directory containing project.json is treated as a WE scene.
-func Detect(path string) (Kind, error) {
+// Detect classifies a filesystem path and resolves it to a Target.
+//
+// A directory is inspected for project.json (Wallpaper Engine item). If
+// present, the WE `type` field determines the Kind and, for video items,
+// the Target.Path is pointed at the inner asset. A plain file is
+// classified by extension.
+func Detect(path string) (Target, error) {
 	info, err := osStat(path)
 	if err != nil {
-		return KindUnknown, err
+		return Target{}, err
 	}
 	if info.IsDir() {
-		if fileExists(filepath.Join(path, "project.json")) {
-			return KindScene, nil
-		}
-		return KindUnknown, fmt.Errorf("directory %q has no project.json", path)
+		return detectDir(path)
 	}
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".png", ".jpg", ".jpeg", ".webp", ".bmp":
-		return KindImage, nil
-	case ".mp4", ".webm", ".mkv", ".mov", ".gif":
-		return KindVideo, nil
-	}
-	return KindUnknown, fmt.Errorf("unsupported file: %s", path)
+	return detectFile(path)
 }
 
-// Select returns the backend that handles the given Kind.
-// Returns an error if no backend supports it yet.
-func Select(kind Kind) (Backend, error) {
-	switch kind {
+func detectDir(path string) (Target, error) {
+	proj, err := workshop.ParseDir(path)
+	if err != nil {
+		return Target{}, fmt.Errorf("parse workshop project: %w", err)
+	}
+	if proj == nil {
+		return Target{}, fmt.Errorf("directory %q has no project.json — not a Wallpaper Engine item", path)
+	}
+	kind, err := kindFromWorkshopType(proj.Type)
+	if err != nil {
+		return Target{}, err
+	}
+	return Target{Kind: kind, Path: proj.EffectivePath(), Project: proj}, nil
+}
+
+func detectFile(path string) (Target, error) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png", ".jpg", ".jpeg", ".webp", ".bmp":
+		return Target{Kind: KindImage, Path: path}, nil
+	case ".mp4", ".webm", ".mkv", ".mov", ".gif":
+		return Target{Kind: KindVideo, Path: path}, nil
+	}
+	return Target{}, fmt.Errorf("unsupported file: %s", path)
+}
+
+func kindFromWorkshopType(t workshop.Type) (Kind, error) {
+	switch t {
+	case workshop.TypeScene, workshop.TypeWeb:
+		return KindScene, nil
+	case workshop.TypeVideo:
+		return KindVideo, nil
+	case workshop.TypeImage:
+		return KindImage, nil
+	case workshop.TypeApplication:
+		return 0, fmt.Errorf("workshop type %q not supported (native app)", t)
+	}
+	return 0, fmt.Errorf("unknown workshop type %q", t)
+}
+
+// Select returns the backend that handles the given Target.
+// Returns an error if no backend supports its Kind yet.
+func Select(t Target) (Backend, error) {
+	switch t.Kind {
 	case KindImage:
 		return NewSwww(), nil
 	case KindVideo:
-		return nil, fmt.Errorf("video backend (mpvpaper) not implemented yet")
+		return NewMpvpaper(), nil
 	case KindScene:
 		return nil, fmt.Errorf("scene backend (linux-wallpaperengine) not implemented yet")
 	}
-	return nil, fmt.Errorf("no backend for kind %s", kind)
+	return nil, fmt.Errorf("no backend for kind %s", t.Kind)
+}
+
+// StopAll attempts to stop every backend. Errors from individual backends
+// are collected but do not abort the sequence.
+func StopAll() []error {
+	var errs []error
+	for _, b := range []Backend{NewSwww(), NewMpvpaper()} {
+		if err := b.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", b.Name(), err))
+		}
+	}
+	return errs
 }

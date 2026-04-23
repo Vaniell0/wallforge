@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestDetect(t *testing.T) {
+func TestDetect_PlainFiles(t *testing.T) {
 	dir := t.TempDir()
 
 	img := filepath.Join(dir, "wall.jpg")
@@ -17,13 +17,6 @@ func TestDetect(t *testing.T) {
 	if err := os.WriteFile(vid, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	scene := filepath.Join(dir, "scene")
-	if err := os.MkdirAll(scene, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scene, "project.json"), []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	cases := []struct {
 		path string
@@ -31,7 +24,6 @@ func TestDetect(t *testing.T) {
 	}{
 		{img, KindImage},
 		{vid, KindVideo},
-		{scene, KindScene},
 	}
 	for _, c := range cases {
 		got, err := Detect(c.path)
@@ -39,19 +31,86 @@ func TestDetect(t *testing.T) {
 			t.Errorf("Detect(%s): %v", c.path, err)
 			continue
 		}
-		if got != c.want {
-			t.Errorf("Detect(%s) = %s, want %s", c.path, got, c.want)
+		if got.Kind != c.want {
+			t.Errorf("Detect(%s).Kind = %s, want %s", c.path, got.Kind, c.want)
+		}
+		if got.Path != c.path {
+			t.Errorf("Detect(%s).Path = %s, want %s", c.path, got.Path, c.path)
+		}
+		if got.Project != nil {
+			t.Errorf("Detect(%s).Project should be nil for plain files", c.path)
 		}
 	}
 }
 
-func TestDetectUnknown(t *testing.T) {
+func TestDetect_WorkshopScene(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "project.json"),
+		[]byte(`{"type":"scene","file":"scene.pkg","title":"x"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != KindScene {
+		t.Errorf("Kind = %s, want scene", got.Kind)
+	}
+	if got.Path != dir {
+		t.Errorf("Path = %s, want %s (scene → dir)", got.Path, dir)
+	}
+	if got.Project == nil {
+		t.Error("Project should be populated for WE items")
+	}
+}
+
+func TestDetect_WorkshopVideo(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "project.json"),
+		[]byte(`{"type":"video","file":"rain.mp4"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != KindVideo {
+		t.Errorf("Kind = %s, want video", got.Kind)
+	}
+	want := filepath.Join(dir, "rain.mp4")
+	if got.Path != want {
+		t.Errorf("Path = %s, want %s (video → inner file)", got.Path, want)
+	}
+}
+
+func TestDetect_WorkshopWeb(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "project.json"),
+		[]byte(`{"type":"web","file":"index.html"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Detect(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != KindScene {
+		t.Errorf("Kind = %s, want scene (web is also handled by lwpe)", got.Kind)
+	}
+}
+
+func TestDetect_BareDirFails(t *testing.T) {
+	if _, err := Detect(t.TempDir()); err == nil {
+		t.Error("expected error for directory without project.json")
+	}
+}
+
+func TestDetect_UnsupportedFile(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "note.txt")
 	if err := os.WriteFile(bad, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Detect(bad); err == nil {
-		t.Error("expected error for .txt, got nil")
+		t.Error("expected error for .txt")
 	}
 }

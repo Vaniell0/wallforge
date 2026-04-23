@@ -1,0 +1,78 @@
+package engine
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"syscall"
+)
+
+// Mpvpaper drives the `mpvpaper` tool for video and GIF wallpapers.
+//
+// Unlike swww/awww, mpvpaper is not a daemon — each invocation spawns a
+// foreground process that must be detached (setsid) and re-spawned on every
+// Apply. Stop uses `pkill` to terminate any running mpvpaper instances.
+type Mpvpaper struct {
+	// Target accepts "*", "ALL", a monitor name, or a comma-separated list.
+	// Default "*" renders on every output.
+	Target string
+
+	// MpvOpts is forwarded verbatim to mpv via `-o`.
+	MpvOpts string
+}
+
+func NewMpvpaper() *Mpvpaper {
+	return &Mpvpaper{
+		Target:  "*",
+		MpvOpts: "no-audio --loop-file=inf --panscan=1.0",
+	}
+}
+
+func (m *Mpvpaper) Name() string { return "mpvpaper" }
+
+func (m *Mpvpaper) Apply(path string) error {
+	// Ensure no previous instance is running before spawning a new one —
+	// mpvpaper will happily launch multiple copies and leak GPU memory.
+	_ = m.Stop()
+
+	args := []string{
+		"-f",                // fork into background after window attach
+		"-o", m.MpvOpts,
+	}
+	if m.Target == "" {
+		args = append(args, "*")
+	} else {
+		args = append(args, m.Target)
+	}
+	args = append(args, path)
+
+	cmd := exec.Command("mpvpaper", args...)
+
+	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open /dev/null: %w", err)
+	}
+	defer devnull.Close()
+	cmd.Stdin = devnull
+	cmd.Stdout = devnull
+	cmd.Stderr = devnull
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start mpvpaper: %w", err)
+	}
+	// Detach so the child survives after the CLI exits.
+	return cmd.Process.Release()
+}
+
+func (m *Mpvpaper) Stop() error {
+	// pkill exits 1 when nothing matches — not an error for our purposes.
+	cmd := exec.Command("pkill", "-x", "mpvpaper")
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		return fmt.Errorf("pkill mpvpaper: %w", err)
+	}
+	return nil
+}

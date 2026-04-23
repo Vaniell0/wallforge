@@ -45,23 +45,30 @@ func cmdApply(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("apply: expected 1 argument (path), got %d", len(args))
 	}
-	path := args[0]
-
-	kind, err := engine.Detect(path)
+	target, err := engine.Detect(args[0])
 	if err != nil {
 		return err
 	}
-	backend, err := engine.Select(kind)
+	backend, err := engine.Select(target)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("wallforge: %s → %s\n", kind, backend.Name())
-	return backend.Apply(path)
+	if target.Project != nil {
+		fmt.Printf("wallforge: %s (workshop %q) → %s\n",
+			target.Kind, target.Project.Title, backend.Name())
+	} else {
+		fmt.Printf("wallforge: %s → %s\n", target.Kind, backend.Name())
+	}
+	return backend.Apply(target.Path)
 }
 
 func cmdStop() error {
-	// For MVP just try swww; later iterate all known backends.
-	return engine.NewSwww().Stop()
+	errs := engine.StopAll()
+	if len(errs) == 0 {
+		return nil
+	}
+	// Report the first non-trivial error but keep going with others.
+	return fmt.Errorf("stop: %d backend(s) reported errors: %v", len(errs), errs)
 }
 
 func usage() {
