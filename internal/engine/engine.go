@@ -116,7 +116,7 @@ func Select(t Target) (Backend, error) {
 	case KindVideo:
 		return NewMpvpaper(), nil
 	case KindScene:
-		return nil, fmt.Errorf("scene backend (linux-wallpaperengine) not implemented yet")
+		return NewWallpaperEngine(), nil
 	}
 	return nil, fmt.Errorf("no backend for kind %s", t.Kind)
 }
@@ -125,7 +125,7 @@ func Select(t Target) (Backend, error) {
 // are collected but do not abort the sequence.
 func StopAll() []error {
 	var errs []error
-	for _, b := range []Backend{NewSwww(), NewMpvpaper()} {
+	for _, b := range []Backend{NewSwww(), NewMpvpaper(), NewWallpaperEngine()} {
 		if err := b.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", b.Name(), err))
 		}

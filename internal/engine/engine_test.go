@@ -104,6 +104,27 @@ func TestDetect_BareDirFails(t *testing.T) {
 	}
 }
 
+func TestSelect_AllKinds(t *testing.T) {
+	cases := []struct {
+		kind Kind
+		want string
+	}{
+		{KindImage, "swww"},
+		{KindVideo, "mpvpaper"},
+		{KindScene, "linux-wallpaperengine"},
+	}
+	for _, c := range cases {
+		b, err := Select(Target{Kind: c.kind})
+		if err != nil {
+			t.Errorf("Select(%s): unexpected error %v", c.kind, err)
+			continue
+		}
+		if b.Name() != c.want {
+			t.Errorf("Select(%s).Name = %q, want %q", c.kind, b.Name(), c.want)
+		}
+	}
+}
+
 func TestDetect_UnsupportedFile(t *testing.T) {
 	dir := t.TempDir()
 	bad := filepath.Join(dir, "note.txt")
