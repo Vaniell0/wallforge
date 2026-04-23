@@ -20,6 +20,8 @@
               !(b == "result" || b == ".git" || b == ".direnv" || b == "dist");
           };
 
+          linux-wallpaperengine = pkgs.callPackage ./nix/linux-wallpaperengine.nix { };
+
           runtimeDeps = with pkgs; [
             swww
             mpvpaper
@@ -49,12 +51,13 @@
               mainProgram = "wallforge";
             };
           };
-        in { inherit wallforge runtimeDeps; };
+        in { inherit wallforge linux-wallpaperengine runtimeDeps; };
 
     in {
       packages = forAllSystems (pkgs:
         let p = mkProject pkgs; in {
           default = p.wallforge;
+          linux-wallpaperengine = p.linux-wallpaperengine;
         });
 
       apps = forAllSystems (pkgs:

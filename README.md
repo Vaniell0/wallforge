@@ -26,8 +26,8 @@ go build ./cmd/wallforge
 | Kind   | Detected by            | Backend                   | Status |
 |--------|------------------------|---------------------------|--------|
 | image  | extension              | swww (`awww` on nixpkgs)  | done   |
-| video  | extension              | mpvpaper                  | TODO   |
-| scene  | dir with `project.json`| linux-wallpaperengine     | TODO   |
+| video  | extension              | mpvpaper                  | done   |
+| scene  | dir with `project.json`| linux-wallpaperengine     | done   |
 
 ## License
 
