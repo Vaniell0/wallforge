@@ -15,7 +15,6 @@ const empty = document.getElementById("empty");
 const filter = document.getElementById("filter");
 const typeFilter = document.getElementById("type-filter");
 const sourceFilter = document.getElementById("source-filter");
-const stopBtn = document.getElementById("stop-btn");
 const reloadBtn = document.getElementById("reload-btn");
 const statusEl = document.getElementById("status");
 
@@ -117,7 +116,21 @@ function renderCard(it) {
   const preview = document.createElement("div");
   preview.className = "preview";
   if (it.hasPreview) {
-    preview.style.backgroundImage = `url('/preview/${encodeURIComponent(it.id)}')`;
+    // Probe the preview URL; only paint the background once we know
+    // the server really returned an image. A missing or corrupted
+    // preview falls back to the "no preview" placeholder styled via
+    // CSS — no more empty black cards.
+    const src = `/preview/${encodeURIComponent(it.id)}`;
+    const probe = new Image();
+    probe.onload = () => {
+      preview.style.backgroundImage = `url('${src}')`;
+    };
+    probe.onerror = () => {
+      preview.classList.add("no-preview");
+    };
+    probe.src = src;
+  } else {
+    preview.classList.add("no-preview");
   }
 
   const body = document.createElement("div");
@@ -165,26 +178,9 @@ async function applyItem(id) {
   }
 }
 
-async function stopAll() {
-  setStatus("Stopping backends…");
-  try {
-    const res = await fetchJSON("/api/stop", { method: "POST" });
-    state.lastApplied = "";
-    document.querySelectorAll(".card.active").forEach((c) => c.classList.remove("active"));
-    if (res.ok) {
-      setStatus("All backends stopped.", "ok");
-    } else {
-      setStatus("Stopped with warnings: " + (res.errors || []).join("; "), "err");
-    }
-  } catch (err) {
-    setStatus(err.message, "err");
-  }
-}
-
 filter.addEventListener("input", render);
 typeFilter.addEventListener("change", render);
 sourceFilter.addEventListener("change", render);
-stopBtn.addEventListener("click", stopAll);
 reloadBtn.addEventListener("click", loadItems);
 
 loadItems();
