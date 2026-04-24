@@ -105,5 +105,15 @@
         });
 
       formatter = forAllSystems (pkgs: pkgs.nixpkgs-fmt);
+
+      # Home-Manager module and a nixpkgs overlay that exposes `pkgs.wallforge`
+      # and `pkgs.linux-wallpaperengine`. Users import both in their own HM
+      # flake; see module.nix for the usage recipe.
+      homeManagerModules.default = import ./module.nix;
+
+      overlays.default = final: prev: {
+        wallforge = (mkProject final).wallforge;
+        linux-wallpaperengine = (mkProject final).linux-wallpaperengine;
+      };
     };
 }
