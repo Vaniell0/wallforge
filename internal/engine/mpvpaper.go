@@ -31,7 +31,7 @@ func (m *Mpvpaper) Apply(path string) error {
 	_ = m.Stop()
 
 	args := []string{
-		"-f",                // fork into background after window attach
+		"-f", // fork into background after window attach
 		"-o", m.mpvOpts,
 	}
 	if m.target == "" {
@@ -61,13 +61,9 @@ func (m *Mpvpaper) Apply(path string) error {
 }
 
 func (m *Mpvpaper) Stop() error {
-	// pkill exits 1 when nothing matches — not an error for our purposes.
-	cmd := exec.Command("pkill", "-x", "mpvpaper")
-	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil
-		}
-		return fmt.Errorf("pkill mpvpaper: %w", err)
-	}
-	return nil
+	// pkill -x fails here too: nixpkgs wraps mpvpaper via makeWrapper,
+	// so the running process is actually `.mpvpaper-wrapped` (17 chars,
+	// truncated to `.mpvpaper-wrapp` in /proc/<pid>/comm). Match by the
+	// real executable basename via /proc/<pid>/exe instead.
+	return killByExeName("mpvpaper")
 }

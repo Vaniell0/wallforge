@@ -91,60 +91,7 @@ func (w *WallpaperEngine) Apply(path string) error {
 }
 
 func (w *WallpaperEngine) Stop() error {
-	// /proc/<pid>/comm is truncated at TASK_COMM_LEN=15, so
-	// `pkill -x linux-wallpaperengine` (21 chars) never matches. `pkill -f`
-	// over a broad pattern also catches shells whose argv happens to
-	// contain the string. Walk /proc by hand and match on comm directly.
-	return killByComm("linux-wallpaper")
-}
-
-// killByComm sends SIGTERM to every process whose /proc/<pid>/comm equals
-// name. Kernel comm is at most 15 characters (TASK_COMM_LEN - 1), so
-// callers must truncate longer names to match.
-func killByComm(name string) error {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return err
-	}
-	var lastErr error
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile("/proc/" + e.Name() + "/comm")
-		if err != nil {
-			continue
-		}
-		got := string(data)
-		if len(got) > 0 && got[len(got)-1] == '\n' {
-			got = got[:len(got)-1]
-		}
-		if got != name {
-			continue
-		}
-		pid, err := parsePID(e.Name())
-		if err != nil {
-			continue
-		}
-		if p, err := os.FindProcess(pid); err == nil {
-			if err := p.Signal(syscall.SIGTERM); err != nil &&
-				err.Error() != "os: process already finished" {
-				lastErr = err
-			}
-		}
-	}
-	return lastErr
-}
-
-func parsePID(s string) (int, error) {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("not a pid: %q", s)
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n, nil
+	return killByExeName("linux-wallpaperengine")
 }
 
 // detectHyprlandMonitors asks hyprctl for the active output names.
