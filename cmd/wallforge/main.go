@@ -6,6 +6,7 @@
 //	wallforge shuffle [flags] [ids...]       rotate through a playlist
 //	wallforge serve [--addr=...]             start the local web-UI
 //	wallforge resume                         re-apply the last-used wallpaper
+//	wallforge workspace <bind|unbind|list|daemon>   per-workspace wallpapers
 //	wallforge list                           list subscribed WE items
 //	wallforge config                         show config + effective values
 //	wallforge stop                           kill running backends
@@ -60,6 +61,10 @@ func main() {
 		}
 	case "resume":
 		if err := cmdResume(cfg); err != nil {
+			die(err)
+		}
+	case "workspace":
+		if err := cmdWorkspace(cfg, os.Args[2:]); err != nil {
 			die(err)
 		}
 	case "completion":
@@ -280,6 +285,10 @@ Usage:
   wallforge shuffle [--interval=15m] [--type=video] [--random=true] [ids...]
   wallforge serve [--addr=127.0.0.1:7777]
   wallforge resume
+  wallforge workspace bind <ws> <path|id>
+  wallforge workspace unbind <ws>
+  wallforge workspace list
+  wallforge workspace daemon
   wallforge list
   wallforge config
   wallforge stop

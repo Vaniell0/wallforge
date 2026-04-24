@@ -38,7 +38,7 @@ _wallforge() {
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    cmds="apply shuffle serve resume list config stop completion version help"
+    cmds="apply shuffle serve resume workspace list config stop completion version help"
 
     if [[ $COMP_CWORD -eq 1 ]]; then
         COMPREPLY=( $(compgen -W "${cmds}" -- "${cur}") )
@@ -63,6 +63,11 @@ _wallforge() {
             ;;
         completion)
             COMPREPLY=( $(compgen -W "bash zsh fish" -- "${cur}") )
+            ;;
+        workspace)
+            if [[ $COMP_CWORD -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "bind unbind list daemon" -- "${cur}") )
+            fi
             ;;
     esac
 }

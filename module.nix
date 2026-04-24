@@ -99,6 +99,14 @@ in
       '';
     };
 
+    workspace = {
+      enable = lib.mkEnableOption ''
+        running `wallforge workspace daemon` as a systemd user service
+        so per-workspace wallpaper bindings (set via
+        `wallforge workspace bind`) take effect automatically
+      '';
+    };
+
     completion = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -196,6 +204,24 @@ in
           "${cfg.package}/bin/wallforge"
           "serve"
           "--addr=${cfg.serve.addr}"
+        ];
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+      Install.WantedBy = [ "graphical-session.target" ];
+    };
+
+    systemd.user.services.wallforge-workspace = lib.mkIf cfg.workspace.enable {
+      Unit = {
+        Description = "Wallforge — per-workspace wallpapers (Hyprland IPC daemon)";
+        After = [ "graphical-session.target" ];
+        PartOf = [ "graphical-session.target" ];
+      };
+      Service = {
+        ExecStart = lib.escapeShellArgs [
+          "${cfg.package}/bin/wallforge"
+          "workspace"
+          "daemon"
         ];
         Restart = "on-failure";
         RestartSec = 5;
