@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: go test + vet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          check-latest: true
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./...
+
+  build:
+    name: go build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      # Sanity check that the CLI compiles on a clean Ubuntu runner
+      # (not just on NixOS). The wallpaper backends are runtime deps,
+      # not compile deps, so this doesn't need swww/mpvpaper/lwpe.
+      - name: Build
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o wallforge ./cmd/wallforge
+          ./wallforge version

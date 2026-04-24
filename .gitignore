@@ -1,7 +1,9 @@
 /result
+/result-*
 /dist
 /.direnv
 /wallforge
+/wallforge.bin
 *.test
 *.out
 .DS_Store
