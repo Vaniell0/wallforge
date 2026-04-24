@@ -23,7 +23,7 @@
           linux-wallpaperengine = pkgs.callPackage ./nix/linux-wallpaperengine.nix { };
 
           runtimeDeps = with pkgs; [
-            swww
+            awww
             mpvpaper
             linux-wallpaperengine
           ];
