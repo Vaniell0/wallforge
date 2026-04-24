@@ -6,10 +6,12 @@ package apply
 
 import (
 	"fmt"
+	"time"
 
-	"github.com/vaniello/wallforge/internal/config"
-	"github.com/vaniello/wallforge/internal/engine"
-	"github.com/vaniello/wallforge/internal/steam"
+	"github.com/Vaniell0/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/engine"
+	"github.com/Vaniell0/wallforge/internal/state"
+	"github.com/Vaniell0/wallforge/internal/steam"
 )
 
 // Result describes the applied wallpaper for caller-side logging.
@@ -26,6 +28,7 @@ type Result struct {
 var (
 	resolveSteam  = steam.Resolve
 	selectBackend = engine.Select
+	saveState     = state.Save
 )
 
 // ByInput classifies input, runs the backend and returns a Result on
@@ -51,6 +54,10 @@ func ByInput(cfg config.Config, input string) (Result, error) {
 	if err := backend.Apply(target.Path); err != nil {
 		return Result{}, fmt.Errorf("%s: %w", backend.Name(), err)
 	}
+	// Best-effort state persist — a failed write must not fail an
+	// otherwise successful apply. The user cares about their wallpaper
+	// being set; resume-after-reboot is a nice-to-have on top.
+	_ = saveState(state.Entry{Input: input, AppliedAt: time.Now().UTC()})
 	r := Result{
 		Kind:    target.Kind.String(),
 		Backend: backend.Name(),

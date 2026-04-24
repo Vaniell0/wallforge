@@ -7,9 +7,18 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vaniello/wallforge/internal/config"
-	"github.com/vaniello/wallforge/internal/engine"
+	"github.com/Vaniell0/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/engine"
+	"github.com/Vaniell0/wallforge/internal/state"
 )
+
+// Disable state persistence for the whole test suite — ByInput writes
+// to $XDG_STATE_HOME on success, and we don't want tests to pollute
+// the developer's real state dir.
+func TestMain(m *testing.M) {
+	saveState = func(state.Entry) error { return nil }
+	os.Exit(m.Run())
+}
 
 // fakeBackend records each Apply call so a test can assert what
 // would have been passed to the real backend without executing it.

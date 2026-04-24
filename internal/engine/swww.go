@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/vaniello/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/config"
 )
 
 // Swww drives the swww fork ("awww" in nixpkgs) for static image wallpapers.

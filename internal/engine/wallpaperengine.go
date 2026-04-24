@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/vaniello/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/config"
 )
 
 // WallpaperEngine drives Almamu/linux-wallpaperengine for Steam Workshop

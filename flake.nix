@@ -61,7 +61,7 @@
 
             meta = {
               description = "Unified wallpaper manager for Hyprland";
-              homepage = "https://github.com/vaniello/wallforge";
+              homepage = "https://github.com/Vaniell0/wallforge";
               license = lib.licenses.asl20;
               platforms = lib.platforms.linux;
               mainProgram = "wallforge";

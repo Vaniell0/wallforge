@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/vaniello/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/config"
 )
 
 // Mpvpaper drives the `mpvpaper` tool for video and GIF wallpapers.

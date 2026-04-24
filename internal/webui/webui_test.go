@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vaniello/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/config"
 )
 
 // newTestServer spins up a Server whose steam.root points at a temp dir

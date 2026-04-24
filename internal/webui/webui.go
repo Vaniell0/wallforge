@@ -15,11 +15,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/vaniello/wallforge/internal/apply"
-	"github.com/vaniello/wallforge/internal/config"
-	"github.com/vaniello/wallforge/internal/engine"
-	"github.com/vaniello/wallforge/internal/steam"
-	"github.com/vaniello/wallforge/internal/workshop"
+	"github.com/Vaniell0/wallforge/internal/apply"
+	"github.com/Vaniell0/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/engine"
+	"github.com/Vaniell0/wallforge/internal/steam"
+	"github.com/Vaniell0/wallforge/internal/workshop"
 )
 
 //go:embed static

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vaniello/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/config"
 )
 
 func TestDetect_PlainFiles(t *testing.T) {

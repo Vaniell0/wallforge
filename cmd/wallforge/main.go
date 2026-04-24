@@ -5,9 +5,11 @@
 //	wallforge apply <path|id>                set wallpaper
 //	wallforge shuffle [flags] [ids...]       rotate through a playlist
 //	wallforge serve [--addr=...]             start the local web-UI
+//	wallforge resume                         re-apply the last-used wallpaper
 //	wallforge list                           list subscribed WE items
 //	wallforge config                         show config + effective values
 //	wallforge stop                           kill running backends
+//	wallforge completion <bash|zsh|fish>     print shell completion script
 //	wallforge version                        print version
 package main
 
@@ -24,11 +26,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/vaniello/wallforge/internal/apply"
-	"github.com/vaniello/wallforge/internal/config"
-	"github.com/vaniello/wallforge/internal/engine"
-	"github.com/vaniello/wallforge/internal/steam"
-	"github.com/vaniello/wallforge/internal/webui"
+	"github.com/Vaniell0/wallforge/internal/apply"
+	"github.com/Vaniell0/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/engine"
+	"github.com/Vaniell0/wallforge/internal/state"
+	"github.com/Vaniell0/wallforge/internal/steam"
+	"github.com/Vaniell0/wallforge/internal/webui"
 )
 
 const version = "0.1.0-alpha"
@@ -53,6 +56,14 @@ func main() {
 		}
 	case "serve":
 		if err := cmdServe(cfg, os.Args[2:]); err != nil {
+			die(err)
+		}
+	case "resume":
+		if err := cmdResume(cfg); err != nil {
+			die(err)
+		}
+	case "completion":
+		if err := cmdCompletion(os.Args[2:]); err != nil {
 			die(err)
 		}
 	case "list":
@@ -182,6 +193,18 @@ func applyByInput(cfg config.Config, input string) error {
 	return nil
 }
 
+func cmdResume(cfg config.Config) error {
+	entry, err := state.Load()
+	if err != nil {
+		return err
+	}
+	if entry.Input == "" {
+		fmt.Fprintln(os.Stderr, "wallforge: no previous wallpaper recorded — nothing to resume")
+		return nil
+	}
+	return applyByInput(cfg, entry.Input)
+}
+
 func cmdServe(cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:7777", "address to bind (host:port)")
@@ -256,14 +279,17 @@ Usage:
   wallforge apply <path|id>
   wallforge shuffle [--interval=15m] [--type=video] [--random=true] [ids...]
   wallforge serve [--addr=127.0.0.1:7777]
+  wallforge resume
   wallforge list
   wallforge config
   wallforge stop
+  wallforge completion <bash|zsh|fish>
   wallforge version
 
 shuffle picks its playlist from explicit IDs, or from all subscriptions
 filtered by --type when no IDs are given. --interval accepts Go duration
-syntax (30s, 5m, 1h). serve starts the local web-UI.`)
+syntax (30s, 5m, 1h). serve starts the local web-UI. resume re-applies
+the last wallpaper from $XDG_STATE_HOME/wallforge/last.json.`)
 }
 
 func die(err error) {

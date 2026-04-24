@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/vaniello/wallforge/internal/config"
-	"github.com/vaniello/wallforge/internal/workshop"
+	"github.com/Vaniell0/wallforge/internal/config"
+	"github.com/Vaniell0/wallforge/internal/workshop"
 )
 
 // Kind classifies wallpaper content by rendering backend.

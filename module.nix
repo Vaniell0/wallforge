@@ -92,6 +92,21 @@ in
       };
     };
 
+    resume = {
+      enable = lib.mkEnableOption ''
+        re-applying the last wallpaper on graphical-session start via a
+        oneshot systemd user service (reads $XDG_STATE_HOME/wallforge/last.json)
+      '';
+    };
+
+    completion = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = "install bash/zsh/fish shell completion scripts";
+      };
+    };
+
     shuffle = {
       enable = lib.mkEnableOption "cycling through a playlist via systemd";
 
@@ -186,6 +201,43 @@ in
         RestartSec = 5;
       };
       Install.WantedBy = [ "graphical-session.target" ];
+    };
+
+    # Oneshot: re-apply the last wallpaper on graphical-session start.
+    # Opting into both `serve` and `resume` is common — the UI runs
+    # continuously, resume runs once on login.
+    systemd.user.services.wallforge-resume = lib.mkIf cfg.resume.enable {
+      Unit = {
+        Description = "Wallforge — restore last wallpaper";
+        After = [ "graphical-session.target" ];
+        PartOf = [ "graphical-session.target" ];
+      };
+      Service = {
+        Type = "oneshot";
+        ExecStart = lib.escapeShellArgs [
+          "${cfg.package}/bin/wallforge"
+          "resume"
+        ];
+      };
+      Install.WantedBy = [ "graphical-session.target" ];
+    };
+
+    # Shell completion scripts. Home Manager's programs.{bash,zsh,fish}
+    # aren't assumed enabled, so we drop files where each shell would
+    # find them on its own.
+    home.file = lib.mkIf cfg.completion.enable {
+      ".local/share/bash-completion/completions/wallforge".source =
+        pkgs.runCommand "wallforge-bash-completion" { } ''
+          ${cfg.package}/bin/wallforge completion bash > $out
+        '';
+      ".config/fish/completions/wallforge.fish".source =
+        pkgs.runCommand "wallforge-fish-completion" { } ''
+          ${cfg.package}/bin/wallforge completion fish > $out
+        '';
+      ".local/share/zsh/site-functions/_wallforge".source =
+        pkgs.runCommand "wallforge-zsh-completion" { } ''
+          ${cfg.package}/bin/wallforge completion zsh > $out
+        '';
     };
   };
 }

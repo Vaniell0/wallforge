@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/vaniello/wallforge/internal/workshop"
+	"github.com/Vaniell0/wallforge/internal/workshop"
 )
 
 // WallpaperEngineAppID is the Steam app ID for Wallpaper Engine.
