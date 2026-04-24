@@ -19,6 +19,9 @@ nix build
 # in Steam — wallforge reads Steam's local cache directly):
 ./result/bin/wallforge list
 ./result/bin/wallforge apply 3682370294
+
+# Local web-UI (browse subscriptions, preview thumbnails, apply/stop):
+./result/bin/wallforge serve            # http://127.0.0.1:7777
 ```
 
 ## Configuration

@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Wallforge</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Wallforge</h1>
+    <div class="controls">
+      <input type="search" id="filter" placeholder="Filter by title or tag…" autocomplete="off">
+      <select id="type-filter">
+        <option value="">all types</option>
+        <option value="image">image</option>
+        <option value="video">video</option>
+        <option value="scene">scene</option>
+        <option value="web">web</option>
+      </select>
+      <button id="stop-btn" type="button">Stop</button>
+      <button id="reload-btn" type="button">Reload</button>
+    </div>
+    <div id="status" class="status"></div>
+  </header>
+  <main>
+    <div id="grid" class="grid"></div>
+    <div id="empty" class="empty" hidden>
+      <p>No Wallpaper Engine subscriptions found.</p>
+      <p>Subscribe to something in Steam (app <code>431960</code>) and hit Reload.</p>
+    </div>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

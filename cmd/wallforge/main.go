@@ -4,6 +4,7 @@
 //
 //	wallforge apply <path|id>                set wallpaper
 //	wallforge shuffle [flags] [ids...]       rotate through a playlist
+//	wallforge serve [--addr=...]             start the local web-UI
 //	wallforge list                           list subscribed WE items
 //	wallforge config                         show config + effective values
 //	wallforge stop                           kill running backends
@@ -23,10 +24,11 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/vaniello/wallforge/internal/apply"
 	"github.com/vaniello/wallforge/internal/config"
 	"github.com/vaniello/wallforge/internal/engine"
 	"github.com/vaniello/wallforge/internal/steam"
-	"github.com/vaniello/wallforge/internal/workshop"
+	"github.com/vaniello/wallforge/internal/webui"
 )
 
 const version = "0.1.0-alpha"
@@ -47,6 +49,10 @@ func main() {
 		}
 	case "shuffle":
 		if err := cmdShuffle(cfg, os.Args[2:]); err != nil {
+			die(err)
+		}
+	case "serve":
+		if err := cmdServe(cfg, os.Args[2:]); err != nil {
 			die(err)
 		}
 	case "list":
@@ -161,38 +167,39 @@ func buildPlaylist(cfg config.Config, args []string, kind string) ([]string, err
 }
 
 // applyByInput resolves the single-input apply path used by both
-// `apply` and `shuffle`. Numeric input → Steam workshop; anything else
-// is a filesystem path.
+// `apply` and `shuffle`. Wraps apply.ByInput with human-readable
+// console output.
 func applyByInput(cfg config.Config, input string) error {
-	path := input
-	if isNumericID(input) {
-		resolved, err := steam.Resolve(cfg.Steam.Root, input)
-		if err != nil {
-			return err
-		}
-		path = resolved
-	}
-	target, err := engine.Detect(path)
+	res, err := apply.ByInput(cfg, input)
 	if err != nil {
 		return err
 	}
-	backend, err := engine.Select(target, cfg)
-	if err != nil {
-		return err
-	}
-	if target.Project != nil {
-		fmt.Printf("wallforge: %s (%q) → %s\n", target.Kind, target.Project.Title, backend.Name())
+	if res.Title != "" {
+		fmt.Printf("wallforge: %s (%q) → %s\n", res.Kind, res.Title, res.Backend)
 	} else {
-		fmt.Printf("wallforge: %s → %s\n", target.Kind, backend.Name())
+		fmt.Printf("wallforge: %s → %s\n", res.Kind, res.Backend)
 	}
-	return backend.Apply(target.Path)
+	return nil
 }
 
-// workshop.TypeScene is kept referenced so `go vet` doesn't flag the
-// import as unused on future refactors — workshop types are the domain
-// vocabulary we already use via Project, even if main.go doesn't name
-// them directly.
-var _ = workshop.TypeScene
+func cmdServe(cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	addr := fs.String("addr", "127.0.0.1:7777", "address to bind (host:port)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	srv, err := webui.New(cfg, *addr)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	fmt.Fprintf(os.Stderr, "wallforge: web-UI on http://%s\n", *addr)
+	return srv.Run(ctx)
+}
 
 func cmdList(cfg config.Config) error {
 	items, err := steam.List(cfg.Steam.Root)
@@ -242,24 +249,13 @@ func cmdStop(cfg config.Config) error {
 	return fmt.Errorf("stop: %d backend(s) reported errors: %v", len(errs), errs)
 }
 
-func isNumericID(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
 func usage() {
 	fmt.Fprintln(os.Stderr, `wallforge — unified wallpaper manager
 
 Usage:
   wallforge apply <path|id>
   wallforge shuffle [--interval=15m] [--type=video] [--random=true] [ids...]
+  wallforge serve [--addr=127.0.0.1:7777]
   wallforge list
   wallforge config
   wallforge stop
@@ -267,7 +263,7 @@ Usage:
 
 shuffle picks its playlist from explicit IDs, or from all subscriptions
 filtered by --type when no IDs are given. --interval accepts Go duration
-syntax (30s, 5m, 1h).`)
+syntax (30s, 5m, 1h). serve starts the local web-UI.`)
 }
 
 func die(err error) {
