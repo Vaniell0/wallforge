@@ -2,23 +2,31 @@
 //
 // Usage:
 //
-//	wallforge apply <path|id>    set wallpaper from file, dir or workshop ID
-//	wallforge list               list subscribed Wallpaper Engine items
-//	wallforge config             show config path and effective values
-//	wallforge stop               kill running wallpaper backends
-//	wallforge version            print version
+//	wallforge apply <path|id>                set wallpaper
+//	wallforge shuffle [flags] [ids...]       rotate through a playlist
+//	wallforge list                           list subscribed WE items
+//	wallforge config                         show config + effective values
+//	wallforge stop                           kill running backends
+//	wallforge version                        print version
 package main
 
 import (
+	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io/fs"
+	"math/rand/v2"
 	"os"
+	"os/signal"
+	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/vaniello/wallforge/internal/config"
 	"github.com/vaniello/wallforge/internal/engine"
 	"github.com/vaniello/wallforge/internal/steam"
+	"github.com/vaniello/wallforge/internal/workshop"
 )
 
 const version = "0.1.0-alpha"
@@ -35,6 +43,10 @@ func main() {
 	switch os.Args[1] {
 	case "apply":
 		if err := cmdApply(cfg, os.Args[2:]); err != nil {
+			die(err)
+		}
+	case "shuffle":
+		if err := cmdShuffle(cfg, os.Args[2:]); err != nil {
 			die(err)
 		}
 	case "list":
@@ -64,10 +76,94 @@ func cmdApply(cfg config.Config, args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("apply: expected 1 argument (path or workshop id), got %d", len(args))
 	}
-	input := args[0]
+	return applyByInput(cfg, args[0])
+}
 
-	// Pure-numeric argument is interpreted as a Steam Workshop ID and
-	// resolved against the local Steam install.
+func cmdShuffle(cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("shuffle", flag.ContinueOnError)
+	var (
+		interval = fs.Duration("interval", 15*time.Minute, "time between wallpaper changes")
+		kind     = fs.String("type", "", "filter subscriptions by WE type (video/scene/image) when no IDs given")
+		random   = fs.Bool("random", true, "randomize order instead of cycling")
+	)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ids, err := buildPlaylist(cfg, fs.Args(), *kind)
+	if err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return errors.New("shuffle: empty playlist (no IDs passed and no matching subscriptions)")
+	}
+
+	fmt.Fprintf(os.Stderr, "wallforge: shuffle of %d item(s), interval %s\n", len(ids), interval)
+
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
+	order := make([]int, len(ids))
+	for i := range order {
+		order[i] = i
+	}
+	if *random {
+		rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+	}
+
+	ticker := time.NewTicker(*interval)
+	defer ticker.Stop()
+
+	for pos := 0; ; pos = (pos + 1) % len(order) {
+		id := ids[order[pos]]
+		if err := applyByInput(cfg, id); err != nil {
+			// Don't abort the whole shuffle on a single broken item —
+			// just log and continue to the next tick.
+			fmt.Fprintf(os.Stderr, "wallforge: apply %s failed: %v\n", id, err)
+		}
+		select {
+		case <-ctx.Done():
+			fmt.Fprintln(os.Stderr, "\nwallforge: shuffle stopped")
+			return nil
+		case <-ticker.C:
+		}
+		// Re-shuffle when wrapping around so sequential runs don't
+		// converge on the same order.
+		if *random && pos+1 == len(order) {
+			rand.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
+		}
+	}
+}
+
+// buildPlaylist returns the list of workshop IDs / paths to cycle
+// through. Explicit args win; otherwise we pull the subscriptions of
+// the requested type.
+func buildPlaylist(cfg config.Config, args []string, kind string) ([]string, error) {
+	if len(args) > 0 {
+		return args, nil
+	}
+	items, err := steam.List(cfg.Steam.Root)
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, it := range items {
+		if it.Project == nil {
+			continue
+		}
+		if kind != "" && string(it.Project.Type) != kind {
+			continue
+		}
+		ids = append(ids, it.ID)
+	}
+	return ids, nil
+}
+
+// applyByInput resolves the single-input apply path used by both
+// `apply` and `shuffle`. Numeric input → Steam workshop; anything else
+// is a filesystem path.
+func applyByInput(cfg config.Config, input string) error {
 	path := input
 	if isNumericID(input) {
 		resolved, err := steam.Resolve(cfg.Steam.Root, input)
@@ -76,7 +172,6 @@ func cmdApply(cfg config.Config, args []string) error {
 		}
 		path = resolved
 	}
-
 	target, err := engine.Detect(path)
 	if err != nil {
 		return err
@@ -92,6 +187,12 @@ func cmdApply(cfg config.Config, args []string) error {
 	}
 	return backend.Apply(target.Path)
 }
+
+// workshop.TypeScene is kept referenced so `go vet` doesn't flag the
+// import as unused on future refactors — workshop types are the domain
+// vocabulary we already use via Project, even if main.go doesn't name
+// them directly.
+var _ = workshop.TypeScene
 
 func cmdList(cfg config.Config) error {
 	items, err := steam.List(cfg.Steam.Root)
@@ -157,11 +258,16 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `wallforge — unified wallpaper manager
 
 Usage:
-  wallforge apply <path|id>    set wallpaper (path or Steam Workshop ID)
-  wallforge list               list subscribed Wallpaper Engine items
-  wallforge config             show config path and effective values
-  wallforge stop               kill running wallpaper backends
-  wallforge version            print version`)
+  wallforge apply <path|id>
+  wallforge shuffle [--interval=15m] [--type=video] [--random=true] [ids...]
+  wallforge list
+  wallforge config
+  wallforge stop
+  wallforge version
+
+shuffle picks its playlist from explicit IDs, or from all subscriptions
+filtered by --type when no IDs are given. --interval accepts Go duration
+syntax (30s, 5m, 1h).`)
 }
 
 func die(err error) {
