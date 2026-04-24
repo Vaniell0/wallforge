@@ -7,6 +7,7 @@
 //	wallforge serve [--addr=...]             start the local web-UI
 //	wallforge resume                         re-apply the last-used wallpaper
 //	wallforge workspace <bind|unbind|list|daemon>   per-workspace wallpapers
+//	wallforge watchdog                       pause backends on battery, resume on AC
 //	wallforge list                           list subscribed WE items
 //	wallforge config                         show config + effective values
 //	wallforge stop                           kill running backends
@@ -65,6 +66,10 @@ func main() {
 		}
 	case "workspace":
 		if err := cmdWorkspace(cfg, os.Args[2:]); err != nil {
+			die(err)
+		}
+	case "watchdog":
+		if err := cmdWatchdog(cfg); err != nil {
 			die(err)
 		}
 	case "completion":
@@ -289,6 +294,7 @@ Usage:
   wallforge workspace unbind <ws>
   wallforge workspace list
   wallforge workspace daemon
+  wallforge watchdog
   wallforge list
   wallforge config
   wallforge stop

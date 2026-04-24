@@ -107,6 +107,13 @@ in
       '';
     };
 
+    watchdog = {
+      enable = lib.mkEnableOption ''
+        stopping wallpaper backends while on battery and resuming them
+        on AC via a systemd user service
+      '';
+    };
+
     completion = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -204,6 +211,23 @@ in
           "${cfg.package}/bin/wallforge"
           "serve"
           "--addr=${cfg.serve.addr}"
+        ];
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+      Install.WantedBy = [ "graphical-session.target" ];
+    };
+
+    systemd.user.services.wallforge-watchdog = lib.mkIf cfg.watchdog.enable {
+      Unit = {
+        Description = "Wallforge — battery watchdog (stop backends on battery)";
+        After = [ "graphical-session.target" ];
+        PartOf = [ "graphical-session.target" ];
+      };
+      Service = {
+        ExecStart = lib.escapeShellArgs [
+          "${cfg.package}/bin/wallforge"
+          "watchdog"
         ];
         Restart = "on-failure";
         RestartSec = 5;
