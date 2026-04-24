@@ -78,6 +78,20 @@ in
       '';
     };
 
+    serve = {
+      enable = lib.mkEnableOption "running the local web-UI as a systemd user service";
+
+      addr = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1:7777";
+        example = "127.0.0.1:7999";
+        description = ''
+          host:port to bind the web-UI. Keep it on the loopback — there's
+          no auth on any endpoint.
+        '';
+      };
+    };
+
     shuffle = {
       enable = lib.mkEnableOption "cycling through a playlist via systemd";
 
@@ -150,6 +164,24 @@ in
       };
       Service = {
         ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/wallforge" ] ++ baseArgs);
+        Restart = "on-failure";
+        RestartSec = 5;
+      };
+      Install.WantedBy = [ "graphical-session.target" ];
+    };
+
+    systemd.user.services.wallforge-serve = lib.mkIf cfg.serve.enable {
+      Unit = {
+        Description = "Wallforge web-UI";
+        After = [ "graphical-session.target" ];
+        PartOf = [ "graphical-session.target" ];
+      };
+      Service = {
+        ExecStart = lib.escapeShellArgs [
+          "${cfg.package}/bin/wallforge"
+          "serve"
+          "--addr=${cfg.serve.addr}"
+        ];
         Restart = "on-failure";
         RestartSec = 5;
       };
