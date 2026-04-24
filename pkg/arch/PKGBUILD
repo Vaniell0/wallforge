@@ -1,0 +1,51 @@
+# Maintainer: Vaniell0 <ripaivan11@gmail.com>
+pkgname=wallforge
+pkgver=0.1.0.alpha
+pkgrel=1
+pkgdesc="Unified wallpaper manager for Hyprland (swww / mpvpaper / linux-wallpaperengine + Steam Workshop)"
+arch=('x86_64')
+url="https://github.com/Vaniell0/wallforge"
+license=('Apache-2.0')
+depends=('swww')
+optdepends=(
+    'mpvpaper: video wallpapers'
+    'linux-wallpaperengine-git: Wallpaper Engine scene/web content'
+    'steam: Wallpaper Engine Workshop subscriptions'
+)
+makedepends=('go')
+provides=('wallforge')
+source=("git+$url.git#tag=v${pkgver/./-}")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname"
+    mkdir -p build
+}
+
+build() {
+    cd "$pkgname"
+    export CGO_ENABLED=0
+    export GOFLAGS="-mod=mod -trimpath"
+    go build -ldflags='-s -w' -o build/wallforge ./cmd/wallforge
+}
+
+check() {
+    cd "$pkgname"
+    go test ./...
+}
+
+package() {
+    cd "$pkgname"
+    install -Dm755 build/wallforge "$pkgdir/usr/bin/wallforge"
+
+    # Completions: each shell has its own drop-in directory.
+    install -d "$pkgdir/usr/share/bash-completion/completions"
+    install -d "$pkgdir/usr/share/zsh/site-functions"
+    install -d "$pkgdir/usr/share/fish/vendor_completions.d"
+    ./build/wallforge completion bash > "$pkgdir/usr/share/bash-completion/completions/wallforge"
+    ./build/wallforge completion zsh  > "$pkgdir/usr/share/zsh/site-functions/_wallforge"
+    ./build/wallforge completion fish > "$pkgdir/usr/share/fish/vendor_completions.d/wallforge.fish"
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}
