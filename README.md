@@ -248,11 +248,25 @@ Proton-wrapped Windows WE has issues.
 - [ ] MPRIS / UPower DBus subscribers to replace filesystem polls
 - [ ] GitHub Actions CI (go test + nix build on push)
 
+## Documentation
+
+- [Configuration reference](docs/configuration.md) — every config
+  field and Home Manager option, with defaults and examples
+- [Architecture](docs/architecture.md) — package graph, data flow,
+  how the pieces fit together
+- [Backends](docs/backends.md) — swww / mpvpaper / linux-wallpaperengine
+  quirks and how to add a new one
+- [Troubleshooting](docs/troubleshooting.md) — common failure modes
+- [Contributing](docs/contributing.md) — dev setup, testing patterns,
+  release process
+- [Changelog](docs/changelog.md)
+
 ## Contributing
 
 Tests are `go test ./...` — keep the full suite green. The project is
 deliberately stdlib-first; new dependencies need justification in the PR
-description.
+description. See [docs/contributing.md](docs/contributing.md) for the
+full dev guide.
 
 ## License
 
