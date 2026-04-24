@@ -3,6 +3,8 @@
 Unified wallpaper manager for Hyprland. One CLI, one web-UI, one story for
 static images, video wallpapers, and Steam Workshop Wallpaper Engine scenes.
 
+![Hyprland desktop with wallforge list running in a terminal, showing Steam Workshop subscriptions over an applied scene wallpaper](docs/screenshots/hero.png)
+
 ```
 wallforge apply ~/Pictures/Wallpapers/island.png     # static via swww
 wallforge apply ~/Videos/sakura.mp4                  # video via mpvpaper
@@ -127,6 +129,8 @@ wallforge stop                                  stop running backends
 wallforge completion <bash|zsh|fish>            print completion script
 ```
 
+![Terminal output of `wallforge list | head -20` showing Steam Workshop subscriptions with ID, type and title columns](docs/screenshots/cli-list.png)
+
 **`apply`** auto-detects the content type:
 
 - File with an image extension → `swww`
@@ -150,6 +154,13 @@ Hyprland's `.socket2` event stream and reloads the bindings on every
 event, so editing bindings while the daemon runs is safe.
 
 ## Web-UI
+
+![Wallforge web-UI grid showing Steam Workshop subscriptions and local library items side by side with filter controls at the top](docs/screenshots/ui-full.png)
+
+Steam Workshop subscriptions and local library items render in the same
+grid; the source dropdown (`workshop` / `library` / `all`) filters between
+them. Clicking a tile POSTs `/api/apply`; the daemon resolves the ID and
+swaps the running wallpaper.
 
 `wallforge serve` on `127.0.0.1:7777` exposes:
 

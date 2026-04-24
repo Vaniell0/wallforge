@@ -12,11 +12,13 @@ import (
 	"github.com/Vaniell0/wallforge/internal/state"
 )
 
-// Disable state persistence for the whole test suite — ByInput writes
-// to $XDG_STATE_HOME on success, and we don't want tests to pollute
-// the developer's real state dir.
+// Disable state persistence + cross-backend stop for the whole test
+// suite — ByInput writes to $XDG_STATE_HOME on success, and it also
+// calls engine.StopOthers which would shell out to awww/pkill. Tests
+// don't care about either side effect.
 func TestMain(m *testing.M) {
 	saveState = func(state.Entry) error { return nil }
+	stopOthers = func(engine.Backend, config.Config) {}
 	os.Exit(m.Run())
 }
 
@@ -198,5 +200,40 @@ func TestByInput_NonexistentPath(t *testing.T) {
 	_, err := ByInput(config.Default(), "/no/such/path-xyz")
 	if err == nil {
 		t.Fatal("expected error for missing path")
+	}
+}
+
+func TestByInput_StopsOtherBackendsBeforeApply(t *testing.T) {
+	dir := t.TempDir()
+	img := filepath.Join(dir, "x.png")
+	if err := os.WriteFile(img, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stopCalledBefore bool
+	fake := &fakeBackend{name: "swww-fake"}
+	defer stubSelect(fake)()
+
+	// Install a stopOthers that records it fired *before* the backend
+	// Apply, not after. If Apply ran first, the image would paint
+	// under a still-live mpvpaper / lwpe layer.
+	prevStop := stopOthers
+	stopOthers = func(keep engine.Backend, _ config.Config) {
+		if len(fake.applied) != 0 {
+			t.Errorf("stopOthers ran AFTER Apply — ordering wrong")
+			return
+		}
+		if keep.Name() != fake.Name() {
+			t.Errorf("stopOthers kept %q, want %q", keep.Name(), fake.Name())
+		}
+		stopCalledBefore = true
+	}
+	defer func() { stopOthers = prevStop }()
+
+	if _, err := ByInput(config.Default(), img); err != nil {
+		t.Fatal(err)
+	}
+	if !stopCalledBefore {
+		t.Error("stopOthers was not called")
 	}
 }

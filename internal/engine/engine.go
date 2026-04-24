@@ -137,3 +137,21 @@ func StopAll(cfg config.Config) []error {
 	}
 	return errs
 }
+
+// StopOthers stops every backend except the one identified by keep.
+// Used before Apply so a new image doesn't render behind a still-live
+// mpvpaper / lwpe layer surface. Errors are swallowed — a backend that
+// isn't running is expected to "fail" to stop, and we don't want to
+// block a successful apply over it.
+func StopOthers(keep Backend, cfg config.Config) {
+	for _, b := range []Backend{
+		NewSwww(cfg.Swww),
+		NewMpvpaper(cfg.Mpvpaper),
+		NewWallpaperEngine(cfg.Wpe),
+	} {
+		if b.Name() == keep.Name() {
+			continue
+		}
+		_ = b.Stop()
+	}
+}

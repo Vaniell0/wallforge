@@ -29,6 +29,7 @@ var (
 	resolveSteam  = steam.Resolve
 	selectBackend = engine.Select
 	saveState     = state.Save
+	stopOthers    = engine.StopOthers
 )
 
 // ByInput classifies input, runs the backend and returns a Result on
@@ -51,6 +52,10 @@ func ByInput(cfg config.Config, input string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Clear any layer-surface the *other* backends are holding before
+	// we paint. Otherwise a stale mpvpaper / lwpe window keeps rendering
+	// over the new swww image and the user sees "nothing happened".
+	stopOthers(backend, cfg)
 	if err := backend.Apply(target.Path); err != nil {
 		return Result{}, fmt.Errorf("%s: %w", backend.Name(), err)
 	}
