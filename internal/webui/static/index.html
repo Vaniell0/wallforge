@@ -17,6 +17,11 @@
         <option value="scene">scene</option>
         <option value="web">web</option>
       </select>
+      <select id="source-filter">
+        <option value="all">all sources</option>
+        <option value="workshop">workshop</option>
+        <option value="library">library</option>
+      </select>
       <button id="stop-btn" type="button">Stop</button>
       <button id="reload-btn" type="button">Reload</button>
     </div>
@@ -25,8 +30,8 @@
   <main>
     <div id="grid" class="grid"></div>
     <div id="empty" class="empty" hidden>
-      <p>No Wallpaper Engine subscriptions found.</p>
-      <p>Subscribe to something in Steam (app <code>431960</code>) and hit Reload.</p>
+      <p>Nothing to show yet.</p>
+      <p>Subscribe to Wallpaper Engine items in Steam (app <code>431960</code>) or drop files into a directory listed under <code>library.roots</code> in <code>~/.config/wallforge/config.json</code>, then hit Reload.</p>
     </div>
   </main>
   <script src="/static/app.js"></script>

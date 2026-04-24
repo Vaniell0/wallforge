@@ -1,14 +1,20 @@
 "use strict";
 
+// Items are a union of Steam Workshop subscriptions and local library
+// entries. Steam items carry {id, type, title, tags, has_preview,
+// broken}; library items carry {id, kind, title, root}. Both sources
+// pass through /api/apply → apply.ByInput and /preview/{id}.
 const state = {
   items: [],
   lastApplied: "",
+  source: "all", // all | workshop | library
 };
 
 const grid = document.getElementById("grid");
 const empty = document.getElementById("empty");
 const filter = document.getElementById("filter");
 const typeFilter = document.getElementById("type-filter");
+const sourceFilter = document.getElementById("source-filter");
 const stopBtn = document.getElementById("stop-btn");
 const reloadBtn = document.getElementById("reload-btn");
 const statusEl = document.getElementById("status");
@@ -29,13 +35,46 @@ async function fetchJSON(url, opts) {
 }
 
 async function loadItems() {
-  setStatus("Loading subscriptions…");
+  setStatus("Loading…");
   try {
-    state.items = await fetchJSON("/api/items");
-    const status = await fetchJSON("/api/status");
+    // Parallel fetches; each can fail independently.
+    const [steamResP, libraryResP, statusResP] = [
+      fetchJSON("/api/items").catch(() => []),
+      fetchJSON("/api/library").catch(() => []),
+      fetchJSON("/api/status").catch(() => ({})),
+    ];
+    const [steamItems, libraryItems, status] = await Promise.all([
+      steamResP, libraryResP, statusResP,
+    ]);
+
+    // Normalise both into a common shape used by the card renderer.
+    const steam = (steamItems || []).map((it) => ({
+      source: "workshop",
+      id: it.id,
+      title: it.title,
+      kind: it.type,
+      tags: it.tags || [],
+      hasPreview: !!it.has_preview,
+      broken: !!it.broken,
+    }));
+    const library = (libraryItems || []).map((it) => ({
+      source: "library",
+      id: it.id,
+      title: it.title,
+      kind: it.kind,
+      tags: [],
+      hasPreview: true, // local file; /preview serves it directly
+      broken: false,
+      root: it.root,
+    }));
+
+    state.items = [...steam, ...library];
     state.lastApplied = status.last_applied || "";
     render();
-    setStatus(`${state.items.length} subscription(s).`, "ok");
+    setStatus(
+      `${steam.length} workshop + ${library.length} library.`,
+      "ok",
+    );
   } catch (err) {
     setStatus(err.message, "err");
     grid.innerHTML = "";
@@ -46,8 +85,10 @@ async function loadItems() {
 function render() {
   const q = filter.value.trim().toLowerCase();
   const t = typeFilter.value;
+  const src = sourceFilter.value;
   const filtered = state.items.filter((it) => {
-    if (t && it.type !== t) return false;
+    if (src && src !== "all" && it.source !== src) return false;
+    if (t && it.kind !== t) return false;
     if (!q) return true;
     if ((it.title || "").toLowerCase().includes(q)) return true;
     if ((it.tags || []).some((tag) => tag.toLowerCase().includes(q))) return true;
@@ -75,7 +116,7 @@ function renderCard(it) {
 
   const preview = document.createElement("div");
   preview.className = "preview";
-  if (it.has_preview) {
+  if (it.hasPreview) {
     preview.style.backgroundImage = `url('/preview/${encodeURIComponent(it.id)}')`;
   }
 
@@ -85,15 +126,16 @@ function renderCard(it) {
   h2.textContent = it.title || "(untitled)";
   const meta = document.createElement("div");
   meta.className = "meta";
-  if (it.type) {
+  if (it.kind) {
     const badge = document.createElement("span");
     badge.className = "badge";
-    badge.textContent = it.type;
+    badge.textContent = it.kind;
     meta.appendChild(badge);
   }
-  const idSpan = document.createElement("span");
-  idSpan.textContent = it.id;
-  meta.appendChild(idSpan);
+  const sourceBadge = document.createElement("span");
+  sourceBadge.className = "badge source-" + it.source;
+  sourceBadge.textContent = it.source;
+  meta.appendChild(sourceBadge);
 
   body.append(h2, meta);
   card.append(preview, body);
@@ -141,6 +183,7 @@ async function stopAll() {
 
 filter.addEventListener("input", render);
 typeFilter.addEventListener("change", render);
+sourceFilter.addEventListener("change", render);
 stopBtn.addEventListener("click", stopAll);
 reloadBtn.addEventListener("click", loadItems);
 

@@ -23,6 +23,7 @@ type Config struct {
 	Swww     SwwwConfig     `json:"swww"`
 	Mpvpaper MpvpaperConfig `json:"mpvpaper"`
 	Wpe      WpeConfig      `json:"wpe"`
+	Library  LibraryConfig  `json:"library"`
 }
 
 type SteamConfig struct {
@@ -48,6 +49,12 @@ type WpeConfig struct {
 	Screen string `json:"screen"`
 }
 
+// LibraryConfig tells the scanner which local directories to index as
+// wallpaper sources. Leading "~/" is expanded at scan time.
+type LibraryConfig struct {
+	Roots []string `json:"roots"`
+}
+
 // Default returns the built-in configuration. Every field here is also
 // the fallback when the user's config file omits it.
 func Default() Config {
@@ -63,6 +70,9 @@ func Default() Config {
 		Wpe: WpeConfig{
 			Fps:    30,
 			Silent: true,
+		},
+		Library: LibraryConfig{
+			Roots: []string{"~/Pictures/Wallpapers"},
 		},
 	}
 }

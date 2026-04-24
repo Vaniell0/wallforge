@@ -13,11 +13,14 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Vaniell0/wallforge/internal/apply"
 	"github.com/Vaniell0/wallforge/internal/config"
 	"github.com/Vaniell0/wallforge/internal/engine"
+	"github.com/Vaniell0/wallforge/internal/library"
 	"github.com/Vaniell0/wallforge/internal/steam"
 	"github.com/Vaniell0/wallforge/internal/workshop"
 )
@@ -36,6 +39,13 @@ type Server struct {
 	// "current wallpaper" strip. Not persisted across restarts; the whole
 	// point of the web-UI is interactive use, not source of truth.
 	lastApplied string
+
+	// libraryIndex maps library Item.ID (short hash) to its absolute
+	// path. Refreshed on every /api/library request so the preview
+	// handler never serves arbitrary paths — only ones we've just
+	// indexed. Mutex-guarded because handlers run concurrently.
+	mu           sync.Mutex
+	libraryIndex map[string]string
 }
 
 // New constructs a Server bound to addr. The listener isn't opened until
@@ -44,7 +54,7 @@ func New(cfg config.Config, addr string) (*Server, error) {
 	if addr == "" {
 		return nil, errors.New("webui: empty addr")
 	}
-	s := &Server{cfg: cfg, addr: addr}
+	s := &Server{cfg: cfg, addr: addr, libraryIndex: map[string]string{}}
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           s.routes(),
@@ -87,6 +97,7 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /{$}", s.handleIndex)
 	mux.HandleFunc("GET /api/items", s.handleItems)
+	mux.HandleFunc("GET /api/library", s.handleLibrary)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /preview/{id}", s.handlePreview)
 	mux.HandleFunc("POST /api/apply", s.handleApply)
@@ -144,12 +155,65 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"last_applied": s.lastApplied})
 }
 
-// handlePreview serves the project.preview file for a single workshop
-// item. The preview filename comes from project.json; we re-parse it
-// instead of trusting an untrusted query parameter to avoid path
-// traversal into arbitrary Steam content.
+// LibraryItemDTO is the JSON shape for /api/library — essentially
+// library.Item without the absolute Path (clients don't need it; the
+// apply handler accepts the ID and we resolve server-side).
+type LibraryItemDTO struct {
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	Root  string `json:"root"`
+}
+
+func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
+	items, err := library.Scan(s.cfg.Library.Roots)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Refresh the ID→Path map so subsequent /preview/{id} / /api/apply
+	// calls can resolve just-scanned items. A client that never calls
+	// /api/library can't trigger a library apply — that's by design.
+	s.mu.Lock()
+	s.libraryIndex = make(map[string]string, len(items))
+	for _, it := range items {
+		s.libraryIndex[it.ID] = it.Path
+	}
+	s.mu.Unlock()
+
+	dto := make([]LibraryItemDTO, 0, len(items))
+	for _, it := range items {
+		dto = append(dto, LibraryItemDTO{
+			ID: it.ID, Kind: it.Kind, Title: it.Title, Root: it.Root,
+		})
+	}
+	writeJSON(w, dto)
+}
+
+func (s *Server) resolveLibraryID(id string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	p, ok := s.libraryIndex[id]
+	return p, ok
+}
+
+// handlePreview serves a thumbnail for a single item. Steam Workshop
+// items look up project.json for the preview filename; library items
+// just serve the image/video itself. Either way we look up the path
+// server-side rather than trusting a URL fragment — no raw filesystem
+// paths flow through the handler boundary.
 func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if strings.HasPrefix(id, "lib_") {
+		path, ok := s.resolveLibraryID(id)
+		if !ok {
+			http.Error(w, "unknown library id (did you call /api/library first?)", http.StatusNotFound)
+			return
+		}
+		http.ServeFile(w, r, path)
+		return
+	}
 	if !apply.IsNumericID(id) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
@@ -181,6 +245,16 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	if req.Input == "" {
 		http.Error(w, "missing input", http.StatusBadRequest)
 		return
+	}
+	// Library IDs are server-side only — the client sends the ID back
+	// and we translate to the absolute path before handing off to apply.
+	if strings.HasPrefix(req.Input, "lib_") {
+		path, ok := s.resolveLibraryID(req.Input)
+		if !ok {
+			http.Error(w, "unknown library id (did you call /api/library first?)", http.StatusNotFound)
+			return
+		}
+		req.Input = path
 	}
 	res, err := apply.ByInput(s.cfg, req.Input)
 	if err != nil {

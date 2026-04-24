@@ -158,6 +158,16 @@ main {
   letter-spacing: 0.04em;
 }
 
+.card .badge.source-workshop {
+  background: #3a2a1a;
+  color: var(--accent);
+}
+
+.card .badge.source-library {
+  background: #1a2a3a;
+  color: #78a9d1;
+}
+
 .card.broken {
   opacity: 0.5;
   cursor: not-allowed;
