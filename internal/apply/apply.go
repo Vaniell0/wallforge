@@ -20,13 +20,21 @@ type Result struct {
 	Path    string // path handed to the backend
 }
 
+// Overridable seams so tests can exercise ByInput without touching the
+// real Steam tree or executing backend processes. Production code uses
+// the real implementations by default.
+var (
+	resolveSteam  = steam.Resolve
+	selectBackend = engine.Select
+)
+
 // ByInput classifies input, runs the backend and returns a Result on
 // success. Numeric inputs are resolved against the Steam Workshop content
 // directory; everything else is a filesystem path.
 func ByInput(cfg config.Config, input string) (Result, error) {
 	path := input
 	if IsNumericID(input) {
-		resolved, err := steam.Resolve(cfg.Steam.Root, input)
+		resolved, err := resolveSteam(cfg.Steam.Root, input)
 		if err != nil {
 			return Result{}, err
 		}
@@ -36,7 +44,7 @@ func ByInput(cfg config.Config, input string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	backend, err := engine.Select(target, cfg)
+	backend, err := selectBackend(target, cfg)
 	if err != nil {
 		return Result{}, err
 	}
