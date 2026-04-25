@@ -72,29 +72,42 @@ func parsePID(s string) (int, error) {
 	return n, nil
 }
 
-// setNice lowers (or, if invoked with a negative value by a privileged
-// process, raises) the scheduling priority of pid. We only ever set
-// positive nice values from wallforge — that just means "be polite to
-// the foreground" and needs no capabilities.
-//
-// Called after cmd.Start(): the child has its own session/pgrp courtesy
-// of Setsid, so PRIO_PROCESS on its pid is enough. Errors are returned
-// for logging but never abort an Apply — the wallpaper rendering is
-// strictly more important than the niceness adjustment.
+// setNice lowers the scheduling priority of pid via PRIO_PROCESS.
+// Use setNicePGroup instead when the child is going to fork children
+// (lwpe spawns CEF helpers, mpv may fork decoder threads).
 func setNice(pid, nice int) error {
+	return setpriorityClamped(syscall.PRIO_PROCESS, pid, nice)
+}
+
+// setNicePGroup lowers the scheduling priority of every process in
+// pgid's process group. Used after cmd.Start() with SysProcAttr.Setsid
+// (which makes the child a session leader and pgid == pid). Catches
+// subprocesses forked between cmd.Start and setpriority — PRIO_PROCESS
+// would only renice the original child, leaving CEF helpers / decoder
+// threads at default nice. Tests cover the short-lived-pid ESRCH path.
+func setNicePGroup(pgid, nice int) error {
+	return setpriorityClamped(syscall.PRIO_PGRP, pgid, nice)
+}
+
+// setpriorityClamped is the shared implementation. nice=0 is a no-op
+// (saves us from spurious EPERM in restricted CI); out-of-range
+// values are silently clamped to the kernel-accepted [-20, 19].
+// We only ever pass positive values from wallforge — "be polite to
+// the foreground" — which needs no capabilities. ESRCH (the target
+// already exited) returns the wrapped error so the caller can log it
+// without it becoming fatal.
+func setpriorityClamped(which, who, nice int) error {
 	if nice == 0 {
 		return nil
 	}
-	// Clamp to the kernel's accepted range. POSIX says EINVAL outside
-	// [-20, 19]; we silently clamp to spare callers a noisy error.
 	if nice > 19 {
 		nice = 19
 	}
 	if nice < -20 {
 		nice = -20
 	}
-	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, nice); err != nil {
-		return fmt.Errorf("setpriority(pid=%d, nice=%d): %w", pid, nice, err)
+	if err := syscall.Setpriority(which, who, nice); err != nil {
+		return fmt.Errorf("setpriority(which=%d, who=%d, nice=%d): %w", which, who, nice, err)
 	}
 	return nil
 }

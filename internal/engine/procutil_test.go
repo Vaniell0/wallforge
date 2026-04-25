@@ -66,3 +66,48 @@ func TestSetNice_Clamp(t *testing.T) {
 		t.Errorf("nice after clamp = %d, want 19", got)
 	}
 }
+
+func TestSetNice_ShortLivedExited(t *testing.T) {
+	// Setting nice on a pid that already exited must return ESRCH
+	// without crashing or applying to a recycled pid. mpvpaper-with-f
+	// would hit this every Apply before the H2 fix; keep a regression
+	// test now that the fix removed -f.
+	cmd := exec.Command("sh", "-c", "exit 0")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sh: %v", err)
+	}
+	pid := cmd.Process.Pid
+	if _, err := cmd.Process.Wait(); err != nil {
+		t.Fatalf("wait: %v", err)
+	}
+	// pid is now reapable / reaped. setNice must surface an error,
+	// not panic, not silently no-op.
+	err := setNice(pid, 5)
+	if err == nil {
+		t.Error("setNice on exited pid returned nil; want ESRCH-style error")
+	}
+}
+
+func TestSetNicePGroup_AdjustsLeader(t *testing.T) {
+	// Spawn a sleep with Setsid so it's its own session leader (and
+	// pgid). PRIO_PGRP on its pid must move the leader's nice — same
+	// observable as PRIO_PROCESS for a single-process group, but
+	// confirms the codepath.
+	cmd := exec.Command("sleep", "60")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start sleep: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+	before := niceOf(t, cmd.Process.Pid)
+	if err := setNicePGroup(cmd.Process.Pid, before+7); err != nil {
+		t.Fatalf("setNicePGroup: %v", err)
+	}
+	after := niceOf(t, cmd.Process.Pid)
+	if after != before+7 {
+		t.Errorf("nice after PRIO_PGRP = %d, want %d", after, before+7)
+	}
+}

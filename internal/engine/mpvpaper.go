@@ -11,9 +11,12 @@ import (
 
 // Mpvpaper drives the `mpvpaper` tool for video and GIF wallpapers.
 //
-// Unlike swww/awww, mpvpaper is not a daemon — each invocation spawns a
-// foreground process that must be detached (setsid) and re-spawned on every
-// Apply. Stop uses `pkill` to terminate any running mpvpaper instances.
+// We deliberately omit mpvpaper's -f (self-fork) flag: with -f the
+// short-lived parent that we niced exits, and the daemonized child
+// keeps decoding at default priority. Letting mpvpaper run in the
+// "foreground" + Setsid + Process.Release achieves the same detach
+// without losing the niceness we just set. Children inherit the
+// pgid, so PRIO_PGRP catches every helper thread mpv forks.
 type Mpvpaper struct {
 	target  string
 	mpvOpts string
@@ -32,7 +35,6 @@ func (m *Mpvpaper) Apply(path string) error {
 	_ = m.Stop()
 
 	args := []string{
-		"-f", // fork into background after window attach
 		"-o", m.mpvOpts,
 	}
 	if m.target == "" {
@@ -52,15 +54,16 @@ func (m *Mpvpaper) Apply(path string) error {
 	cmd.Stdin = devnull
 	cmd.Stdout = devnull
 	cmd.Stderr = devnull
+	// Setsid creates a new session AND new process group with PGID =
+	// child PID. setNicePGroup below uses that.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start mpvpaper: %w", err)
 	}
-	// Lower the freshly-spawned process before it ramps up — a video
-	// decode pipeline that's been niced from the start never gets to
-	// fight the foreground for cycles.
-	if err := setNice(cmd.Process.Pid, m.nice); err != nil {
+	// Renice the whole process group so any decoder / GL helper
+	// threads mpv forks land politely too. Errors only log.
+	if err := setNicePGroup(cmd.Process.Pid, m.nice); err != nil {
 		fmt.Fprintf(os.Stderr, "wallforge mpvpaper: %v\n", err)
 	}
 	// Detach so the child survives after the CLI exits.

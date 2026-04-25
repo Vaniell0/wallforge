@@ -89,10 +89,11 @@ func (w *WallpaperEngine) Apply(path string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start linux-wallpaperengine: %w", err)
 	}
-	// lwpe is the heaviest backend; nice it down before the GL scene
-	// ramps so the niceness applies to every CEF / decoder thread it
-	// spawns from here (children inherit nice).
-	if err := setNice(cmd.Process.Pid, w.nice); err != nil {
+	// PRIO_PGRP, not PRIO_PROCESS: lwpe forks several CEF helpers
+	// (renderer, gpu, utility). PRIO_PROCESS would only renice the
+	// main thread. Setsid in SysProcAttr made child PID == PGID, so
+	// passing the pid here addresses the whole group.
+	if err := setNicePGroup(cmd.Process.Pid, w.nice); err != nil {
 		fmt.Fprintf(os.Stderr, "wallforge lwpe: %v\n", err)
 	}
 	return cmd.Process.Release()
