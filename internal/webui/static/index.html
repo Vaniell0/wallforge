@@ -25,6 +25,17 @@
       <button id="reload-btn" type="button">Reload</button>
     </div>
     <div id="status" class="status"></div>
+    <div id="power" class="power" hidden>
+      <div class="power-info">
+        <span class="badge" id="power-ac">ac</span>
+        <span class="badge" id="power-profile">profile</span>
+        <span class="badge" id="power-state" hidden></span>
+      </div>
+      <div class="power-controls">
+        <button type="button" id="power-pause">Pause</button>
+        <button type="button" id="power-resume">Resume</button>
+      </div>
+    </div>
   </header>
   <main>
     <div id="grid" class="grid"></div>

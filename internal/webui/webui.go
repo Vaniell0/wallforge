@@ -21,7 +21,9 @@ import (
 	"github.com/Vaniell0/wallforge/internal/config"
 	"github.com/Vaniell0/wallforge/internal/engine"
 	"github.com/Vaniell0/wallforge/internal/library"
+	"github.com/Vaniell0/wallforge/internal/state"
 	"github.com/Vaniell0/wallforge/internal/steam"
+	"github.com/Vaniell0/wallforge/internal/watchdog"
 	"github.com/Vaniell0/wallforge/internal/workshop"
 )
 
@@ -46,6 +48,13 @@ type Server struct {
 	// indexed. Mutex-guarded because handlers run concurrently.
 	mu           sync.Mutex
 	libraryIndex map[string]string
+
+	// userPaused tracks "the user clicked Pause in this UI session" so
+	// the status panel can reflect manual intent. The watchdog process
+	// runs in a separate unit and may also pause/resume — we don't try
+	// to reconcile both views; whoever acted last wins, and the user
+	// can always hit Reload to re-read current sysfs/ppd state.
+	userPaused bool
 }
 
 // New constructs a Server bound to addr. The listener isn't opened until
@@ -99,9 +108,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/items", s.handleItems)
 	mux.HandleFunc("GET /api/library", s.handleLibrary)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/power", s.handlePower)
 	mux.HandleFunc("GET /preview/{id}", s.handlePreview)
 	mux.HandleFunc("POST /api/apply", s.handleApply)
 	mux.HandleFunc("POST /api/stop", s.handleStop)
+	mux.HandleFunc("POST /api/power/pause", s.handlePowerPause)
+	mux.HandleFunc("POST /api/power/resume", s.handlePowerResume)
 
 	return logRequests(mux)
 }
@@ -262,11 +274,17 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.lastApplied = req.Input
+	s.mu.Lock()
+	s.userPaused = false
+	s.mu.Unlock()
 	writeJSON(w, res)
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	errs := engine.StopAll(s.cfg)
+	s.mu.Lock()
+	s.userPaused = true
+	s.mu.Unlock()
 	if len(errs) == 0 {
 		s.lastApplied = ""
 		writeJSON(w, map[string]any{"ok": true})
@@ -277,6 +295,95 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		msgs = append(msgs, e.Error())
 	}
 	writeJSON(w, map[string]any{"ok": false, "errors": msgs})
+}
+
+// PowerDTO is the JSON shape returned by /api/power. Mirrors the
+// snapshot the watchdog acts on plus the UI-tracked manual pause flag,
+// so the front-end can render a single status strip without doing
+// detection itself.
+type PowerDTO struct {
+	AC                bool   `json:"ac"`
+	Profile           string `json:"profile"`
+	PauseOnPowerSaver bool   `json:"pause_on_power_saver"`
+	WouldAutoPause    bool   `json:"would_auto_pause"`
+	AutoPauseReason   string `json:"auto_pause_reason"`
+	UserPaused        bool   `json:"user_paused"`
+	LastApplied       string `json:"last_applied"`
+}
+
+func (s *Server) currentPower() PowerDTO {
+	// We don't keep a Watchdog instance around — the serve unit is
+	// separate from the watchdog unit — so we just call the same
+	// detection helpers. Polling on demand is cheap (one sysfs read +
+	// one short subprocess) and keeps the UI honest about the current
+	// state regardless of whether the watchdog is even running.
+	w := watchdog.New(0, s.cfg.Watchdog.PauseOnPowerSaver, nil, nil)
+	snap := w.Snapshot()
+	autoPause, reason := watchdog.Effective(snap, s.cfg.Watchdog.PauseOnPowerSaver)
+
+	s.mu.Lock()
+	user := s.userPaused
+	s.mu.Unlock()
+
+	return PowerDTO{
+		AC:                snap.Power != watchdog.StateBattery,
+		Profile:           snap.Profile.String(),
+		PauseOnPowerSaver: s.cfg.Watchdog.PauseOnPowerSaver,
+		WouldAutoPause:    autoPause,
+		AutoPauseReason:   reason,
+		UserPaused:        user,
+		LastApplied:       s.lastApplied,
+	}
+}
+
+func (s *Server) handlePower(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.currentPower())
+}
+
+func (s *Server) handlePowerPause(w http.ResponseWriter, r *http.Request) {
+	errs := engine.StopAll(s.cfg)
+	s.mu.Lock()
+	s.userPaused = true
+	s.mu.Unlock()
+	if len(errs) == 0 {
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	msgs := make([]string, 0, len(errs))
+	for _, e := range errs {
+		msgs = append(msgs, e.Error())
+	}
+	// Even on partial errors we mark the UI as paused — the user's
+	// intent was to stop, and at least some backends did.
+	writeJSON(w, map[string]any{"ok": false, "errors": msgs})
+}
+
+func (s *Server) handlePowerResume(w http.ResponseWriter, r *http.Request) {
+	// Resume target priority: lastApplied (this serve session) → state
+	// file (persisted across processes). Falling back to the state
+	// file means clicking Resume right after `wallforge serve` starts
+	// still does the right thing.
+	target := s.lastApplied
+	if target == "" {
+		entry, err := state.Load()
+		if err == nil {
+			target = entry.Input
+		}
+	}
+	if target == "" {
+		http.Error(w, "no wallpaper to resume — apply one first", http.StatusBadRequest)
+		return
+	}
+	res, err := apply.ByInput(s.cfg, target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.lastApplied = target
+	s.mu.Lock()
+	s.userPaused = false
+	s.mu.Unlock()
+	writeJSON(w, res)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

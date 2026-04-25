@@ -17,6 +17,12 @@ const typeFilter = document.getElementById("type-filter");
 const sourceFilter = document.getElementById("source-filter");
 const reloadBtn = document.getElementById("reload-btn");
 const statusEl = document.getElementById("status");
+const powerEl = document.getElementById("power");
+const powerAcEl = document.getElementById("power-ac");
+const powerProfileEl = document.getElementById("power-profile");
+const powerStateEl = document.getElementById("power-state");
+const powerPauseBtn = document.getElementById("power-pause");
+const powerResumeBtn = document.getElementById("power-resume");
 
 function setStatus(msg, kind = "") {
   statusEl.textContent = msg;
@@ -181,6 +187,72 @@ async function applyItem(id) {
 filter.addEventListener("input", render);
 typeFilter.addEventListener("change", render);
 sourceFilter.addEventListener("change", render);
-reloadBtn.addEventListener("click", loadItems);
+reloadBtn.addEventListener("click", () => {
+  loadItems();
+  loadPower();
+});
+powerPauseBtn.addEventListener("click", () => powerAction("pause"));
+powerResumeBtn.addEventListener("click", () => powerAction("resume"));
+
+// Power state isn't load-bearing for the wallpaper grid, so we render
+// it independently and don't block the rest of the UI on it.
+async function loadPower() {
+  try {
+    const p = await fetchJSON("/api/power");
+    renderPower(p);
+  } catch (err) {
+    // Hide silently — endpoint absence shouldn't disrupt the main UI
+    // (e.g. older binaries served from a stale package).
+    powerEl.hidden = true;
+  }
+}
+
+function renderPower(p) {
+  powerEl.hidden = false;
+  powerAcEl.textContent = p.ac ? "ac" : "battery";
+  powerAcEl.className = "badge power-" + (p.ac ? "ac" : "battery");
+  powerProfileEl.textContent = p.profile;
+  powerProfileEl.className = "badge power-profile-" + p.profile;
+
+  // Combined state badge: prefer "user-paused" when the user clicked
+  // Pause, otherwise show the watchdog-effective reason ("battery",
+  // "power-saver", "battery+power-saver"). Hidden when nothing's up.
+  let stateText = "";
+  let stateClass = "badge";
+  if (p.user_paused) {
+    stateText = "paused (manual)";
+    stateClass = "badge power-state-paused";
+  } else if (p.would_auto_pause) {
+    stateText = "paused: " + p.auto_pause_reason;
+    stateClass = "badge power-state-auto";
+  }
+  if (stateText) {
+    powerStateEl.textContent = stateText;
+    powerStateEl.className = stateClass;
+    powerStateEl.hidden = false;
+  } else {
+    powerStateEl.hidden = true;
+  }
+
+  const isPaused = p.user_paused || p.would_auto_pause;
+  powerPauseBtn.disabled = isPaused;
+  powerResumeBtn.disabled = !isPaused && !p.last_applied;
+}
+
+async function powerAction(kind) {
+  setStatus(kind === "pause" ? "Pausing…" : "Resuming…");
+  try {
+    await fetchJSON("/api/power/" + kind, { method: "POST" });
+    setStatus(kind === "pause" ? "Paused." : "Resumed.", "ok");
+    await loadPower();
+  } catch (err) {
+    setStatus(err.message, "err");
+  }
+}
 
 loadItems();
+loadPower();
+// Lightweight refresh: re-poll power state every 30s so a profile
+// switch outside the UI (e.g. via powerprofilesctl) eventually surfaces
+// without forcing a manual reload.
+setInterval(loadPower, 30_000);

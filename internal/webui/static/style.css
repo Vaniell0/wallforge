@@ -88,6 +88,77 @@ button:hover {
   color: var(--danger);
 }
 
+.power {
+  margin-top: 10px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+}
+
+.power-info {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.power-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.power-controls button {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.power-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.power .badge {
+  background: var(--border);
+  color: var(--text);
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.power .badge.power-ac {
+  background: #1a3a1f;
+  color: var(--ok);
+}
+
+.power .badge.power-battery {
+  background: #3a1a1a;
+  color: var(--danger);
+}
+
+.power .badge.power-profile-performance {
+  background: #3a2a1a;
+  color: var(--accent);
+}
+
+.power .badge.power-profile-balanced {
+  background: #1a2a3a;
+  color: #78a9d1;
+}
+
+.power .badge.power-profile-power-saver {
+  background: #1a3a1f;
+  color: var(--ok);
+}
+
+.power .badge.power-state-paused,
+.power .badge.power-state-auto {
+  background: var(--danger);
+  color: #fff;
+}
+
 main {
   padding: 16px 20px 32px;
 }

@@ -18,22 +18,23 @@ import (
 func cmdWatchdog(cfg config.Config) error {
 	w := watchdog.New(
 		15*time.Second,
-		func() {
-			// Battery: drop every backend. mpvpaper and lwpe are the
-			// expensive ones; a static swww image is already zero-cost
-			// after load but StopAll handles it uniformly.
-			fmt.Fprintln(os.Stderr, "wallforge watchdog: on battery — stopping backends")
+		cfg.Watchdog.PauseOnPowerSaver,
+		func(reason string) {
+			// Pause: drop every backend. mpvpaper and lwpe are the
+			// expensive ones; static swww costs nothing after load
+			// but StopAll handles it uniformly.
+			fmt.Fprintf(os.Stderr, "wallforge watchdog: pause (%s) — stopping backends\n", reason)
 			for _, e := range engine.StopAll(cfg) {
 				fmt.Fprintf(os.Stderr, "wallforge watchdog: stop: %v\n", e)
 			}
 		},
 		func() {
-			// AC: re-apply the last wallpaper if we have one on record.
+			// Resume: re-apply the last wallpaper if we have one on record.
 			entry, err := state.Load()
 			if err != nil || entry.Input == "" {
 				return
 			}
-			fmt.Fprintf(os.Stderr, "wallforge watchdog: AC — resuming %s\n", entry.Input)
+			fmt.Fprintf(os.Stderr, "wallforge watchdog: resume — restoring %s\n", entry.Input)
 			if _, err := apply.ByInput(cfg, entry.Input); err != nil {
 				fmt.Fprintf(os.Stderr, "wallforge watchdog: resume: %v\n", err)
 			}
@@ -44,6 +45,10 @@ func cmdWatchdog(cfg config.Config) error {
 		os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	fmt.Fprintln(os.Stderr, "wallforge: battery watchdog running (15s poll)")
+	saver := "ignored"
+	if cfg.Watchdog.PauseOnPowerSaver {
+		saver = "respected"
+	}
+	fmt.Fprintf(os.Stderr, "wallforge: watchdog running (15s poll, ppd power-saver %s)\n", saver)
 	return w.Run(ctx)
 }

@@ -24,6 +24,7 @@ type Config struct {
 	Mpvpaper MpvpaperConfig `json:"mpvpaper"`
 	Wpe      WpeConfig      `json:"wpe"`
 	Library  LibraryConfig  `json:"library"`
+	Watchdog WatchdogConfig `json:"watchdog"`
 }
 
 type SteamConfig struct {
@@ -55,6 +56,14 @@ type LibraryConfig struct {
 	Roots []string `json:"roots"`
 }
 
+// WatchdogConfig tunes the auto-pause behaviour. Battery → pause is
+// always on; PauseOnPowerSaver opts the watchdog into reacting to ppd
+// profile changes too, so a manual switch to "power-saver" without
+// unplugging still stops video/scene backends.
+type WatchdogConfig struct {
+	PauseOnPowerSaver bool `json:"pause_on_power_saver"`
+}
+
 // Default returns the built-in configuration. Every field here is also
 // the fallback when the user's config file omits it.
 func Default() Config {
@@ -73,6 +82,9 @@ func Default() Config {
 		},
 		Library: LibraryConfig{
 			Roots: []string{"~/Pictures/Wallpapers"},
+		},
+		Watchdog: WatchdogConfig{
+			PauseOnPowerSaver: true,
 		},
 	}
 }
