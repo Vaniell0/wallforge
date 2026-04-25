@@ -159,6 +159,11 @@ button:hover {
   color: #fff;
 }
 
+.power .badge.power-state-low {
+  background: #3a2a1a;
+  color: var(--accent);
+}
+
 main {
   padding: 16px 20px 32px;
 }

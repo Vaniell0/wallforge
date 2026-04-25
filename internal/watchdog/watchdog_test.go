@@ -14,40 +14,20 @@ import (
 func TestDetectIn(t *testing.T) {
 	tests := []struct {
 		name      string
-		layout    map[string]string // rel path → content
+		layout    map[string]string
 		wantState PowerState
 	}{
-		{
-			name:      "no battery dir",
-			layout:    map[string]string{},
-			wantState: StateAC,
-		},
-		{
-			name:      "single battery discharging",
-			layout:    map[string]string{"BAT0/status": "Discharging\n"},
-			wantState: StateBattery,
-		},
-		{
-			name:      "single battery charging",
-			layout:    map[string]string{"BAT0/status": "Charging\n"},
-			wantState: StateAC,
-		},
-		{
-			name: "two batteries, one discharging",
-			layout: map[string]string{
-				"BAT0/status": "Full\n",
-				"BAT1/status": "Discharging\n",
-			},
-			wantState: StateBattery,
-		},
-		{
-			name: "two batteries, both full",
-			layout: map[string]string{
-				"BAT0/status": "Full\n",
-				"BAT1/status": "Full\n",
-			},
-			wantState: StateAC,
-		},
+		{"no battery dir", map[string]string{}, StateAC},
+		{"single battery discharging", map[string]string{"BAT0/status": "Discharging\n"}, StateBattery},
+		{"single battery charging", map[string]string{"BAT0/status": "Charging\n"}, StateAC},
+		{"two batteries, one discharging", map[string]string{
+			"BAT0/status": "Full\n",
+			"BAT1/status": "Discharging\n",
+		}, StateBattery},
+		{"two batteries, both full", map[string]string{
+			"BAT0/status": "Full\n",
+			"BAT1/status": "Full\n",
+		}, StateAC},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,112 +48,156 @@ func TestDetectIn(t *testing.T) {
 	}
 }
 
-func TestEffective(t *testing.T) {
+func TestParsePolicy(t *testing.T) {
+	cases := map[string]PowerSaverPolicy{
+		"":         PolicyReduce,
+		"reduce":   PolicyReduce,
+		"REDUCE":   PolicyReduce,
+		"  pause ": PolicyPause,
+		"ignore":   PolicyIgnore,
+		"garbage":  PolicyReduce, // unknown → safe default
+	}
+	for in, want := range cases {
+		if got := ParsePolicy(in); got != want {
+			t.Errorf("ParsePolicy(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+func TestEffectiveMode(t *testing.T) {
 	cases := []struct {
-		name              string
-		s                 Snapshot
-		pauseOnPowerSaver bool
-		wantPaused        bool
-		wantReason        string
+		name       string
+		snap       Snapshot
+		policy     PowerSaverPolicy
+		wantMode   Mode
+		wantReason string
 	}{
 		{
-			name: "ac + performance → resume",
-			s:    Snapshot{Power: StateAC, Profile: power.ProfilePerformance},
+			name:     "ac + performance → normal",
+			snap:     Snapshot{Power: StateAC, Profile: power.ProfilePerformance},
+			policy:   PolicyReduce,
+			wantMode: ModeNormal,
 		},
 		{
-			name:       "battery alone → pause battery",
-			s:          Snapshot{Power: StateBattery, Profile: power.ProfileBalanced},
-			wantPaused: true, wantReason: "battery",
+			name:     "ac + balanced → normal",
+			snap:     Snapshot{Power: StateAC, Profile: power.ProfileBalanced},
+			policy:   PolicyReduce,
+			wantMode: ModeNormal,
 		},
 		{
-			name:              "ac + power-saver, opt-in → pause",
-			s:                 Snapshot{Power: StateAC, Profile: power.ProfilePowerSaver},
-			pauseOnPowerSaver: true,
-			wantPaused:        true, wantReason: "power-saver",
+			name:       "ac + power-saver, reduce → low-power",
+			snap:       Snapshot{Power: StateAC, Profile: power.ProfilePowerSaver},
+			policy:     PolicyReduce,
+			wantMode:   ModeLowPower,
+			wantReason: "power-saver",
 		},
 		{
-			name:              "ac + power-saver, opt-out → resume",
-			s:                 Snapshot{Power: StateAC, Profile: power.ProfilePowerSaver},
-			pauseOnPowerSaver: false,
+			name:       "ac + power-saver, pause → paused",
+			snap:       Snapshot{Power: StateAC, Profile: power.ProfilePowerSaver},
+			policy:     PolicyPause,
+			wantMode:   ModePaused,
+			wantReason: "power-saver",
 		},
 		{
-			name:              "battery + power-saver → combined reason",
-			s:                 Snapshot{Power: StateBattery, Profile: power.ProfilePowerSaver},
-			pauseOnPowerSaver: true,
-			wantPaused:        true, wantReason: "battery+power-saver",
+			name:     "ac + power-saver, ignore → normal",
+			snap:     Snapshot{Power: StateAC, Profile: power.ProfilePowerSaver},
+			policy:   PolicyIgnore,
+			wantMode: ModeNormal,
 		},
 		{
-			name: "ppd unknown on battery → still pauses for battery",
-			s:    Snapshot{Power: StateBattery, Profile: power.ProfileUnknown},
-			pauseOnPowerSaver: true,
-			wantPaused: true, wantReason: "battery",
+			name:       "battery alone → paused (battery)",
+			snap:       Snapshot{Power: StateBattery, Profile: power.ProfileBalanced},
+			policy:     PolicyReduce,
+			wantMode:   ModePaused,
+			wantReason: "battery",
+		},
+		{
+			name:       "battery + power-saver → paused (battery wins)",
+			snap:       Snapshot{Power: StateBattery, Profile: power.ProfilePowerSaver},
+			policy:     PolicyReduce,
+			wantMode:   ModePaused,
+			wantReason: "battery",
+		},
+		{
+			name:       "battery + power-saver, pause policy → still battery",
+			snap:       Snapshot{Power: StateBattery, Profile: power.ProfilePowerSaver},
+			policy:     PolicyPause,
+			wantMode:   ModePaused,
+			wantReason: "battery",
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotPaused, gotReason := Effective(c.s, c.pauseOnPowerSaver)
-			if gotPaused != c.wantPaused || gotReason != c.wantReason {
-				t.Errorf("Effective = (%v, %q), want (%v, %q)",
-					gotPaused, gotReason, c.wantPaused, c.wantReason)
+			gotMode, gotReason := EffectiveMode(c.snap, c.policy)
+			if gotMode != c.wantMode || gotReason != c.wantReason {
+				t.Errorf("EffectiveMode = (%v, %q), want (%v, %q)",
+					gotMode, gotReason, c.wantMode, c.wantReason)
 			}
 		})
 	}
 }
 
-func TestWatchdog_FiresOnTransitions(t *testing.T) {
-	type tick struct {
-		s PowerState
-		p power.Profile
+type tick struct {
+	s PowerState
+	p power.Profile
+}
+
+// driver wires a deterministic timeline through the watchdog detector
+// seams. Each call to detectProfile (the second of the pair) advances
+// the index, mirroring how detectPower would be called first per Run
+// iteration.
+type driver struct {
+	mu       sync.Mutex
+	timeline []tick
+	idx      int
+}
+
+func (d *driver) power() PowerState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.idx >= len(d.timeline) {
+		return d.timeline[len(d.timeline)-1].s
 	}
+	return d.timeline[d.idx].s
+}
+
+func (d *driver) profile() power.Profile {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.idx >= len(d.timeline) {
+		return d.timeline[len(d.timeline)-1].p
+	}
+	p := d.timeline[d.idx].p
+	d.idx++
+	return p
+}
+
+func TestWatchdog_FiresOnTransitions(t *testing.T) {
+	d := &driver{timeline: []tick{
+		{StateBattery, power.ProfileBalanced},   // → paused (battery)
+		{StateBattery, power.ProfileBalanced},   // unchanged
+		{StateAC, power.ProfileBalanced},        // → normal
+		{StateAC, power.ProfilePowerSaver},      // → low-power
+		{StateAC, power.ProfileBalanced},        // → normal
+	}}
+
 	var (
 		mu          sync.Mutex
-		pauseCount  int
-		resumeCount int
-		lastReason  string
-		// Timeline: battery → AC → power-saver-on-AC → AC again.
-		timeline = []tick{
-			{StateBattery, power.ProfileBalanced},
-			{StateBattery, power.ProfileBalanced},
-			{StateAC, power.ProfileBalanced},
-			{StateAC, power.ProfilePowerSaver},
-			{StateAC, power.ProfileBalanced},
-		}
-		idx int
+		transitions []Mode
+		reasons     []string
 	)
-
 	w := &Watchdog{
-		Interval:          5 * time.Millisecond,
-		PauseOnPowerSaver: true,
-		OnPause: func(reason string) {
+		Interval: 5 * time.Millisecond,
+		Policy:   PolicyReduce,
+		OnModeChange: func(mode Mode, reason string) {
 			mu.Lock()
-			pauseCount++
-			lastReason = reason
-			mu.Unlock()
-		},
-		OnResume: func() {
-			mu.Lock()
-			resumeCount++
+			transitions = append(transitions, mode)
+			reasons = append(reasons, reason)
 			mu.Unlock()
 		},
 	}
-	w.detectPower = func() PowerState {
-		mu.Lock()
-		defer mu.Unlock()
-		if idx >= len(timeline) {
-			return timeline[len(timeline)-1].s
-		}
-		return timeline[idx].s
-	}
-	w.detectProfile = func() power.Profile {
-		mu.Lock()
-		defer mu.Unlock()
-		if idx >= len(timeline) {
-			return timeline[len(timeline)-1].p
-		}
-		p := timeline[idx].p
-		idx++
-		return p
-	}
+	w.detectPower = d.power
+	w.detectProfile = d.profile
 
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -182,98 +206,61 @@ func TestWatchdog_FiresOnTransitions(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	// Expected transitions:
-	//   tick 0: battery        → pause (battery)
-	//   tick 1: battery        → no fire (same state)
-	//   tick 2: ac/balanced    → resume
-	//   tick 3: ac/power-saver → pause (power-saver)
-	//   tick 4: ac/balanced    → resume
-	if pauseCount < 2 {
-		t.Errorf("OnPause called %d times, want ≥ 2", pauseCount)
+	// Expected ordered modes (initial fire counts): paused, normal, low-power, normal.
+	want := []Mode{ModePaused, ModeNormal, ModeLowPower, ModeNormal}
+	if len(transitions) < len(want) {
+		t.Fatalf("got %d transitions, want at least %d (%v)", len(transitions), len(want), transitions)
 	}
-	if resumeCount < 2 {
-		t.Errorf("OnResume called %d times, want ≥ 2", resumeCount)
+	for i, m := range want {
+		if transitions[i] != m {
+			t.Errorf("transitions[%d] = %v, want %v (full: %v)", i, transitions[i], m, transitions)
+		}
 	}
-	// Last pause should have been triggered by power-saver, not battery.
-	if lastReason != "power-saver" {
-		t.Errorf("lastReason = %q, want power-saver", lastReason)
+	// Low-power transition must carry the "power-saver" reason.
+	if reasons[2] != "power-saver" {
+		t.Errorf("reasons[2] = %q, want power-saver (full: %v)", reasons[2], reasons)
 	}
 }
 
-func TestWatchdog_NoCallbacksNoCrash(t *testing.T) {
-	// Omitting both callbacks must still run cleanly.
-	w := &Watchdog{Interval: 5 * time.Millisecond}
+func TestWatchdog_NoCallbackNoCrash(t *testing.T) {
+	w := &Watchdog{Interval: 5 * time.Millisecond, Policy: PolicyReduce}
 	w.detectPower = func() PowerState { return StateAC }
 	w.detectProfile = func() power.Profile { return power.ProfileBalanced }
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer cancel()
 	_ = w.Run(ctx)
 }
 
-func TestWatchdog_ReasonChangeWhilePaused(t *testing.T) {
-	// While we stay paused, the reason can change (battery →
-	// battery+power-saver). The dispatcher must re-fire OnPause so
-	// the log line matches reality, even though the boolean didn't flip.
+func TestWatchdog_PausePolicyOnPowerSaver(t *testing.T) {
+	// Verify policy=pause downgrades a power-saver profile from
+	// LowPower (default) to Paused.
+	d := &driver{timeline: []tick{
+		{StateAC, power.ProfilePerformance},
+		{StateAC, power.ProfilePowerSaver},
+	}}
 	var (
-		mu      sync.Mutex
-		reasons []string
+		mu     sync.Mutex
+		modes  []Mode
 	)
-	timeline := []struct {
-		s PowerState
-		p power.Profile
-	}{
-		{StateBattery, power.ProfileBalanced},   // pause: battery
-		{StateBattery, power.ProfilePowerSaver}, // re-fire: battery+power-saver
-		{StateBattery, power.ProfilePowerSaver},
-	}
-	idx := 0
 	w := &Watchdog{
-		Interval:          5 * time.Millisecond,
-		PauseOnPowerSaver: true,
-		OnPause: func(reason string) {
+		Interval: 5 * time.Millisecond,
+		Policy:   PolicyPause,
+		OnModeChange: func(m Mode, _ string) {
 			mu.Lock()
-			reasons = append(reasons, reason)
+			modes = append(modes, m)
 			mu.Unlock()
 		},
 	}
-	w.detectPower = func() PowerState {
-		mu.Lock()
-		defer mu.Unlock()
-		if idx >= len(timeline) {
-			return timeline[len(timeline)-1].s
-		}
-		return timeline[idx].s
-	}
-	w.detectProfile = func() power.Profile {
-		mu.Lock()
-		defer mu.Unlock()
-		if idx >= len(timeline) {
-			return timeline[len(timeline)-1].p
-		}
-		p := timeline[idx].p
-		idx++
-		return p
-	}
+	w.detectPower = d.power
+	w.detectProfile = d.profile
+
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
 	defer cancel()
 	_ = w.Run(ctx)
 
 	mu.Lock()
 	defer mu.Unlock()
-	// Want at least one "battery" reason then at least one
-	// "battery+power-saver" reason.
-	sawBattery := false
-	sawBoth := false
-	for _, r := range reasons {
-		if r == "battery" {
-			sawBattery = true
-		}
-		if r == "battery+power-saver" {
-			sawBoth = true
-		}
-	}
-	if !sawBattery || !sawBoth {
-		t.Errorf("reasons = %v, want both 'battery' and 'battery+power-saver'", reasons)
+	if len(modes) < 2 || modes[0] != ModeNormal || modes[1] != ModePaused {
+		t.Errorf("modes = %v, want first two = [normal, paused]", modes)
 	}
 }

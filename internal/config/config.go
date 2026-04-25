@@ -42,6 +42,11 @@ type SwwwConfig struct {
 type MpvpaperConfig struct {
 	Target  string `json:"target"`
 	MpvOpts string `json:"mpv_opts"`
+	// BatteryMpvOpts swaps in for MpvOpts when the watchdog reports
+	// LowPower (AC + ppd power-saver, by default). Empty = stay with
+	// MpvOpts even in LowPower. Typical contents: hwdec=auto, lower
+	// cache, vsync=display-vdrop.
+	BatteryMpvOpts string `json:"battery_mpv_opts"`
 	// Nice is the scheduling priority adjustment applied after the
 	// mpvpaper process is spawned. Positive values lower its CPU
 	// priority so the foreground stays snappy; 0 disables the call.
@@ -52,6 +57,8 @@ type WpeConfig struct {
 	Fps    int    `json:"fps"`
 	Silent bool   `json:"silent"`
 	Screen string `json:"screen"`
+	// FpsBattery overrides Fps in LowPower mode. 0 = keep Fps.
+	FpsBattery int `json:"fps_battery"`
 	// Nice — see MpvpaperConfig.Nice. lwpe is the heaviest backend
 	// (full GL scene); a polite default keeps a CPU-bound build
 	// from stuttering when a wallpaper happens to spike.
@@ -64,12 +71,17 @@ type LibraryConfig struct {
 	Roots []string `json:"roots"`
 }
 
-// WatchdogConfig tunes the auto-pause behaviour. Battery → pause is
-// always on; PauseOnPowerSaver opts the watchdog into reacting to ppd
-// profile changes too, so a manual switch to "power-saver" without
-// unplugging still stops video/scene backends.
+// WatchdogConfig tunes the auto-pause behaviour. Battery → ModePaused
+// is hardcoded; PowerSaverPolicy chooses what to do on AC + ppd
+// power-saver. Allowed values:
+//
+//	"reduce"  — drop into LowPower mode (battery_mpv_opts, fps_battery)
+//	"pause"   — full stop, like on battery
+//	"ignore"  — keep running at Normal quality
+//
+// Anything else falls back to "reduce".
 type WatchdogConfig struct {
-	PauseOnPowerSaver bool `json:"pause_on_power_saver"`
+	PowerSaverPolicy string `json:"power_saver_policy"`
 }
 
 // Default returns the built-in configuration. Every field here is also
@@ -81,22 +93,39 @@ func Default() Config {
 			Duration:   "1.5",
 		},
 		Mpvpaper: MpvpaperConfig{
-			Target:  "*",
-			MpvOpts: "no-audio --loop-file=inf --panscan=1.0",
-			Nice:    10,
+			Target:         "*",
+			MpvOpts:        "no-audio --loop-file=inf --panscan=1.0",
+			BatteryMpvOpts: "no-audio --loop-file=inf --panscan=1.0 --hwdec=auto --cache-secs=2 --video-sync=display-vdrop",
+			Nice:           10,
 		},
 		Wpe: WpeConfig{
-			Fps:    30,
-			Silent: true,
-			Nice:   10,
+			Fps:        30,
+			Silent:     true,
+			FpsBattery: 15,
+			Nice:       10,
 		},
 		Library: LibraryConfig{
 			Roots: []string{"~/Pictures/Wallpapers"},
 		},
 		Watchdog: WatchdogConfig{
-			PauseOnPowerSaver: true,
+			PowerSaverPolicy: "reduce",
 		},
 	}
+}
+
+// ForLowPower returns a Config with the LowPower-mode overrides
+// applied. Empty / zero overrides leave the original value untouched.
+// Used by apply.ByInput to pass a per-mode-tuned config to the
+// backend constructors.
+func (c Config) ForLowPower() Config {
+	out := c
+	if c.Mpvpaper.BatteryMpvOpts != "" {
+		out.Mpvpaper.MpvOpts = c.Mpvpaper.BatteryMpvOpts
+	}
+	if c.Wpe.FpsBattery > 0 {
+		out.Wpe.Fps = c.Wpe.FpsBattery
+	}
+	return out
 }
 
 // Path returns the location of the user config file.

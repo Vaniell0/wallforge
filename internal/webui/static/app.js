@@ -214,17 +214,20 @@ function renderPower(p) {
   powerProfileEl.textContent = p.profile;
   powerProfileEl.className = "badge power-profile-" + p.profile;
 
-  // Combined state badge: prefer "user-paused" when the user clicked
-  // Pause, otherwise show the watchdog-effective reason ("battery",
-  // "power-saver", "battery+power-saver"). Hidden when nothing's up.
+  // State badge: manual pause wins over auto state. Auto modes are
+  // "low-power" (reduced opts/fps) or "paused" (full stop). Normal
+  // mode hides the badge entirely.
   let stateText = "";
   let stateClass = "badge";
   if (p.user_paused) {
     stateText = "paused (manual)";
     stateClass = "badge power-state-paused";
-  } else if (p.would_auto_pause) {
-    stateText = "paused: " + p.auto_pause_reason;
+  } else if (p.mode === "paused") {
+    stateText = "paused: " + p.reason;
     stateClass = "badge power-state-auto";
+  } else if (p.mode === "low-power") {
+    stateText = "low-power: " + p.reason;
+    stateClass = "badge power-state-low";
   }
   if (stateText) {
     powerStateEl.textContent = stateText;
@@ -234,7 +237,7 @@ function renderPower(p) {
     powerStateEl.hidden = true;
   }
 
-  const isPaused = p.user_paused || p.would_auto_pause;
+  const isPaused = p.user_paused || p.mode === "paused";
   powerPauseBtn.disabled = isPaused;
   powerResumeBtn.disabled = !isPaused && !p.last_applied;
 }

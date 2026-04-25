@@ -302,13 +302,13 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 // so the front-end can render a single status strip without doing
 // detection itself.
 type PowerDTO struct {
-	AC                bool   `json:"ac"`
-	Profile           string `json:"profile"`
-	PauseOnPowerSaver bool   `json:"pause_on_power_saver"`
-	WouldAutoPause    bool   `json:"would_auto_pause"`
-	AutoPauseReason   string `json:"auto_pause_reason"`
-	UserPaused        bool   `json:"user_paused"`
-	LastApplied       string `json:"last_applied"`
+	AC               bool   `json:"ac"`
+	Profile          string `json:"profile"`
+	PowerSaverPolicy string `json:"power_saver_policy"`
+	Mode             string `json:"mode"`   // normal | low-power | paused
+	Reason           string `json:"reason"` // empty for normal
+	UserPaused       bool   `json:"user_paused"`
+	LastApplied      string `json:"last_applied"`
 }
 
 func (s *Server) currentPower() PowerDTO {
@@ -317,22 +317,23 @@ func (s *Server) currentPower() PowerDTO {
 	// detection helpers. Polling on demand is cheap (one sysfs read +
 	// one short subprocess) and keeps the UI honest about the current
 	// state regardless of whether the watchdog is even running.
-	w := watchdog.New(0, s.cfg.Watchdog.PauseOnPowerSaver, nil, nil)
+	policy := watchdog.ParsePolicy(s.cfg.Watchdog.PowerSaverPolicy)
+	w := watchdog.New(0, policy, nil)
 	snap := w.Snapshot()
-	autoPause, reason := watchdog.Effective(snap, s.cfg.Watchdog.PauseOnPowerSaver)
+	mode, reason := watchdog.EffectiveMode(snap, policy)
 
 	s.mu.Lock()
 	user := s.userPaused
 	s.mu.Unlock()
 
 	return PowerDTO{
-		AC:                snap.Power != watchdog.StateBattery,
-		Profile:           snap.Profile.String(),
-		PauseOnPowerSaver: s.cfg.Watchdog.PauseOnPowerSaver,
-		WouldAutoPause:    autoPause,
-		AutoPauseReason:   reason,
-		UserPaused:        user,
-		LastApplied:       s.lastApplied,
+		AC:               snap.Power != watchdog.StateBattery,
+		Profile:          snap.Profile.String(),
+		PowerSaverPolicy: policy.String(),
+		Mode:             mode.String(),
+		Reason:           reason,
+		UserPaused:       user,
+		LastApplied:      s.lastApplied,
 	}
 }
 
