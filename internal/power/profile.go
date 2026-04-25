@@ -11,10 +11,13 @@
 package power
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Profile is the ppd profile name normalised to a finite enum so callers
@@ -47,30 +50,45 @@ func (p Profile) String() string {
 // fall back to AC/battery-only logic.
 var ErrNotInstalled = errors.New("power: powerprofilesctl not found in PATH")
 
-// runner abstracts exec.Command so tests can stub the shell-out without
-// needing the real binary. The default mirrors os/exec exactly.
-type runner func(name string, args ...string) *exec.Cmd
+// runner abstracts exec.CommandContext so tests can stub the shell-out
+// without needing the real binary. The signature carries the context so
+// tests can verify timeout propagation.
+type runner func(ctx context.Context, name string, args ...string) *exec.Cmd
 
-var defaultRunner runner = exec.Command
+var defaultRunner runner = exec.CommandContext
+
+// detectTimeout caps how long we wait for `powerprofilesctl get`. The
+// command normally returns in <50ms; anything past 2s means ppd is
+// hung (D-Bus stuck, daemon restart in flight) and we'd rather report
+// ProfileUnknown than block the watchdog poll loop.
+const detectTimeout = 2 * time.Second
+
+// ErrTimeout is returned when ppd doesn't reply within detectTimeout.
+// Distinct from ErrNotInstalled so callers can decide whether to log
+// loudly (timeout = something's stuck) or silently (not installed =
+// just not configured on this host).
+var ErrTimeout = errors.New("power: powerprofilesctl timed out")
 
 // Detect runs `powerprofilesctl get` and parses its output. Errors are
 // returned untouched so callers can distinguish "ppd not installed"
-// (ErrNotInstalled) from "ppd ran but failed" — the watchdog cares
-// about the difference: missing tool is benign, runtime failure is a
-// log-worthy event.
+// (ErrNotInstalled), "ppd hung" (ErrTimeout), and "ran but failed".
 func Detect() (Profile, error) {
 	return detectWith(defaultRunner)
 }
 
 func detectWith(run runner) (Profile, error) {
-	cmd := run("powerprofilesctl", "get")
+	ctx, cancel := context.WithTimeout(context.Background(), detectTimeout)
+	defer cancel()
+
+	cmd := run(ctx, "powerprofilesctl", "get")
 	out, err := cmd.Output()
 	if err != nil {
-		// "Not installed" can surface two ways: LookPath fails before
-		// fork (*exec.Error wrapping ErrNotFound) or fork/exec returns
-		// ENOENT for an explicit absolute path. Both mean the user
-		// has no ppd installed; map them to ErrNotInstalled so the
-		// watchdog can downgrade gracefully.
+		// ctx.Err() == DeadlineExceeded means we hit the timeout —
+		// translate to ErrTimeout. Otherwise distinguish "not
+		// installed" (LookPath fails or ENOENT) from "ran and failed".
+		if ctx.Err() == context.DeadlineExceeded {
+			return ProfileUnknown, fmt.Errorf("%w: %v", ErrTimeout, err)
+		}
 		var execErr *exec.Error
 		var pathErr *fs.PathError
 		if errors.As(err, &execErr) || errors.As(err, &pathErr) || errors.Is(err, exec.ErrNotFound) {

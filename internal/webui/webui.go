@@ -11,7 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -58,10 +61,18 @@ type Server struct {
 }
 
 // New constructs a Server bound to addr. The listener isn't opened until
-// Run is called.
+// Run is called. Warns to stderr when addr resolves to a non-loopback
+// host — the API is unauthenticated, exposing it on a public interface
+// hands wallforge control to anyone on the network.
 func New(cfg config.Config, addr string) (*Server, error) {
 	if addr == "" {
 		return nil, errors.New("webui: empty addr")
+	}
+	if !isLoopbackAddr(addr) {
+		fmt.Fprintf(os.Stderr,
+			"wallforge: WARNING — serving on %q (non-loopback). "+
+				"The API has no authentication; anyone reaching this socket "+
+				"can change wallpapers and stop backends.\n", addr)
 	}
 	s := &Server{cfg: cfg, addr: addr, libraryIndex: map[string]string{}}
 	s.http = &http.Server{
@@ -70,6 +81,38 @@ func New(cfg config.Config, addr string) (*Server, error) {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return s, nil
+}
+
+// isLoopbackAddr reports whether the host portion of a bind addr
+// (e.g. "127.0.0.1:7777") is a loopback. Empty / wildcard hosts
+// ("", "0.0.0.0", "::") count as non-loopback because they bind on
+// every interface.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		// Bare ":7777" splits to host="", which means wildcard.
+		return false
+	}
+	if host == "" {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	// Hostname like "localhost". Resolve all addrs and require every
+	// one of them to be loopback — partial loopback (a hostname that
+	// resolves to both 127.0.0.1 and a public IP) is unsafe.
+	addrs, err := net.LookupHost(host)
+	if err != nil || len(addrs) == 0 {
+		return false
+	}
+	for _, a := range addrs {
+		ip := net.ParseIP(a)
+		if ip == nil || !ip.IsLoopback() {
+			return false
+		}
+	}
+	return true
 }
 
 // Run starts the server and blocks until ctx is cancelled. Shutdown is
@@ -110,12 +153,55 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/power", s.handlePower)
 	mux.HandleFunc("GET /preview/{id}", s.handlePreview)
-	mux.HandleFunc("POST /api/apply", s.handleApply)
-	mux.HandleFunc("POST /api/stop", s.handleStop)
-	mux.HandleFunc("POST /api/power/pause", s.handlePowerPause)
-	mux.HandleFunc("POST /api/power/resume", s.handlePowerResume)
+	// State-mutating endpoints go through guardCSRF — see the helper
+	// for the full rationale. /api/apply already requires a JSON body
+	// (which triggers a CORS preflight), but the others previously
+	// accepted simple POSTs that any cross-origin page could fire.
+	mux.HandleFunc("POST /api/apply", guardCSRF(s.handleApply))
+	mux.HandleFunc("POST /api/stop", guardCSRF(s.handleStop))
+	mux.HandleFunc("POST /api/power/pause", guardCSRF(s.handlePowerPause))
+	mux.HandleFunc("POST /api/power/resume", guardCSRF(s.handlePowerResume))
 
 	return logRequests(mux)
+}
+
+// guardCSRF blocks cross-origin POSTs from drive-by browser tabs.
+//
+// Modern browsers send Sec-Fetch-Site on every request: same-origin /
+// same-site / cross-site / none (curl, fetch from extensions). We
+// accept same-origin and "none" (the latter covers direct API clients
+// and curl), reject everything else. Browsers without Sec-Fetch
+// support fall back to the Origin header — same-host origin only.
+//
+// This is layered defense: the listener is loopback by default, but
+// DNS rebinding + a malicious page in the same browser session could
+// still hit 127.0.0.1. Without the guard, /api/power/pause and
+// /api/stop are simple-request CSRF targets — no preflight, no cookie
+// needed (the API is unauthenticated), just a single fetch().
+func guardCSRF(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		site := r.Header.Get("Sec-Fetch-Site")
+		if site != "" {
+			if site != "same-origin" && site != "none" {
+				http.Error(w, "cross-origin requests blocked", http.StatusForbidden)
+				return
+			}
+			next(w, r)
+			return
+		}
+		// Sec-Fetch-Site missing → fall back to Origin.
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// No browser context (curl, native client) — allow.
+			next(w, r)
+			return
+		}
+		if u, err := url.Parse(origin); err == nil && u.Host == r.Host {
+			next(w, r)
+			return
+		}
+		http.Error(w, "cross-origin requests blocked", http.StatusForbidden)
+	}
 }
 
 // ItemDTO is the JSON shape returned by /api/items — one row per
@@ -164,7 +250,7 @@ func (s *Server) handleItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]string{"last_applied": s.lastApplied})
+	writeJSON(w, map[string]string{"last_applied": s.getLastApplied()})
 }
 
 // LibraryItemDTO is the JSON shape for /api/library — essentially
@@ -208,6 +294,21 @@ func (s *Server) resolveLibraryID(id string) (string, bool) {
 	defer s.mu.Unlock()
 	p, ok := s.libraryIndex[id]
 	return p, ok
+}
+
+// getLastApplied / setLastApplied centralise access to the field —
+// without these, /api/power (read every 30s by every open tab) races
+// against /api/apply (write on every click). go test -race confirms.
+func (s *Server) getLastApplied() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastApplied
+}
+
+func (s *Server) setLastApplied(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastApplied = v
 }
 
 // handlePreview serves a thumbnail for a single item. Steam Workshop
@@ -273,7 +374,7 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.lastApplied = req.Input
+	s.setLastApplied(req.Input)
 	s.mu.Lock()
 	s.userPaused = false
 	s.mu.Unlock()
@@ -286,7 +387,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	s.userPaused = true
 	s.mu.Unlock()
 	if len(errs) == 0 {
-		s.lastApplied = ""
+		s.setLastApplied("")
 		writeJSON(w, map[string]any{"ok": true})
 		return
 	}
@@ -324,6 +425,7 @@ func (s *Server) currentPower() PowerDTO {
 
 	s.mu.Lock()
 	user := s.userPaused
+	last := s.lastApplied
 	s.mu.Unlock()
 
 	return PowerDTO{
@@ -333,7 +435,7 @@ func (s *Server) currentPower() PowerDTO {
 		Mode:             mode.String(),
 		Reason:           reason,
 		UserPaused:       user,
-		LastApplied:      s.lastApplied,
+		LastApplied:      last,
 	}
 }
 
@@ -364,7 +466,7 @@ func (s *Server) handlePowerResume(w http.ResponseWriter, r *http.Request) {
 	// file (persisted across processes). Falling back to the state
 	// file means clicking Resume right after `wallforge serve` starts
 	// still does the right thing.
-	target := s.lastApplied
+	target := s.getLastApplied()
 	if target == "" {
 		entry, err := state.Load()
 		if err == nil {
@@ -380,7 +482,7 @@ func (s *Server) handlePowerResume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.lastApplied = target
+	s.setLastApplied(target)
 	s.mu.Lock()
 	s.userPaused = false
 	s.mu.Unlock()

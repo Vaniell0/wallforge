@@ -1,9 +1,11 @@
 package power
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"testing"
+	"time"
 )
 
 func TestParse(t *testing.T) {
@@ -43,15 +45,13 @@ func TestProfileString(t *testing.T) {
 }
 
 // stubRunner returns a runner that produces a fake exec.Cmd whose
-// Output() yields the supplied stdout. We achieve that by wiring
-// `echo -n <out>` through /bin/sh — every NixOS dev env has both, and
-// it keeps the test from hard-depending on a writable temp script.
+// Output() yields the supplied stdout. We swap powerprofilesctl with
+// `printf %s <out>` — fast and present in every dev environment.
 func stubRunner(out string) runner {
-	return func(name string, args ...string) *exec.Cmd {
-		// We're meant to run `powerprofilesctl get`; replace with echo.
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		_ = name
 		_ = args
-		return exec.Command("printf", "%s", out)
+		return exec.CommandContext(ctx, "printf", "%s", out)
 	}
 }
 
@@ -79,10 +79,10 @@ func TestDetectWith_KnownProfiles(t *testing.T) {
 }
 
 func TestDetectWith_NotInstalled(t *testing.T) {
-	missing := func(name string, args ...string) *exec.Cmd {
+	missing := func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		_ = name
 		_ = args
-		return exec.Command("/this/binary/does/not/exist/powerprofilesctl-stub")
+		return exec.CommandContext(ctx, "/this/binary/does/not/exist/powerprofilesctl-stub")
 	}
 	got, err := detectWith(missing)
 	if !errors.Is(err, ErrNotInstalled) {
@@ -90,5 +90,33 @@ func TestDetectWith_NotInstalled(t *testing.T) {
 	}
 	if got != ProfileUnknown {
 		t.Errorf("got = %v, want ProfileUnknown", got)
+	}
+}
+
+func TestDetectWith_Timeout(t *testing.T) {
+	// Run a command that sleeps past the 2s detectTimeout. We don't
+	// override detectTimeout to keep this honest about the production
+	// behaviour, but use t.Parallel-incompatible wallclock waits — so
+	// the suite stays serial. ~2.1s.
+	if testing.Short() {
+		t.Skip("skipping 2s timeout test in -short mode")
+	}
+	stubSleep := func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		_ = name
+		_ = args
+		return exec.CommandContext(ctx, "sleep", "5")
+	}
+	start := time.Now()
+	got, err := detectWith(stubSleep)
+	elapsed := time.Since(start)
+
+	if !errors.Is(err, ErrTimeout) {
+		t.Fatalf("err = %v, want ErrTimeout", err)
+	}
+	if got != ProfileUnknown {
+		t.Errorf("got = %v, want ProfileUnknown", got)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("detectWith blocked %s past timeout (want ≤3s)", elapsed)
 	}
 }
