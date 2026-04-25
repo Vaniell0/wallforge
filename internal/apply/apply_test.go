@@ -15,11 +15,15 @@ import (
 
 // Disable state persistence + cross-backend stop + mode detection for
 // the whole test suite. ByInput would otherwise write to
-// $XDG_STATE_HOME, shell out via StopOthers, and consult the host's
-// real sysfs/ppd state — none of which is what these tests are about.
-// Mode-aware behaviour gets its own tests below with explicit stubs.
+// $XDG_STATE_HOME (both last.json and pending.json), shell out via
+// StopOthers, and consult the host's real sysfs/ppd state — none of
+// which is what these tests are about. Earlier versions only stubbed
+// saveState; tests that hit the Paused branch wrote real pending.json
+// files into the host's home, which the live watchdog then tried to
+// apply on next start. Stub both writers to be safe.
 func TestMain(m *testing.M) {
 	saveState = func(state.Entry) error { return nil }
+	savePendingState = func(state.Entry) error { return nil }
 	stopOthers = func(engine.Backend, config.Config) {}
 	detectMode = func(config.Config) watchdog.Mode { return watchdog.ModeNormal }
 	os.Exit(m.Run())
