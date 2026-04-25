@@ -42,10 +42,12 @@ type SwwwConfig struct {
 type MpvpaperConfig struct {
 	Target  string `json:"target"`
 	MpvOpts string `json:"mpv_opts"`
-	// BatteryMpvOpts swaps in for MpvOpts when the watchdog reports
-	// LowPower (AC + ppd power-saver, by default). Empty = stay with
-	// MpvOpts even in LowPower. Typical contents: hwdec=auto, lower
-	// cache, vsync=display-vdrop.
+	// BatteryMpvOpts is appended to MpvOpts when the watchdog reports
+	// LowPower (AC + ppd power-saver, by default). Empty = leave
+	// MpvOpts unchanged in LowPower. mpv processes options
+	// left-to-right so later flags override earlier ones — meaning
+	// "--cache-secs=2" in BatteryMpvOpts wins over a "--cache-secs=10"
+	// in MpvOpts. The user's base opts (e.g. "--mute") survive.
 	BatteryMpvOpts string `json:"battery_mpv_opts"`
 	// Nice is the scheduling priority adjustment applied after the
 	// mpvpaper process is spawned. Positive values lower its CPU
@@ -93,9 +95,13 @@ func Default() Config {
 			Duration:   "1.5",
 		},
 		Mpvpaper: MpvpaperConfig{
-			Target:         "*",
+			Target: "*",
+			// Base opts always apply. Battery opts are appended in
+			// LowPower — kept slim because they only add tweaks, not
+			// duplicate the base. mpv reads left-to-right so later
+			// flags win when keys collide.
 			MpvOpts:        "no-audio --loop-file=inf --panscan=1.0",
-			BatteryMpvOpts: "no-audio --loop-file=inf --panscan=1.0 --hwdec=auto --cache-secs=2 --video-sync=display-vdrop",
+			BatteryMpvOpts: "--hwdec=auto --cache-secs=2 --video-sync=display-vdrop",
 			Nice:           10,
 		},
 		Wpe: WpeConfig{
@@ -114,13 +120,19 @@ func Default() Config {
 }
 
 // ForLowPower returns a Config with the LowPower-mode overrides
-// applied. Empty / zero overrides leave the original value untouched.
-// Used by apply.ByInput to pass a per-mode-tuned config to the
-// backend constructors.
+// applied. BatteryMpvOpts is *appended* to MpvOpts so the user's base
+// flags survive (e.g. "--mute" stays in effect even when battery opts
+// add hwdec). FpsBattery replaces Fps wholesale because lwpe's --fps
+// is a single value, not composable. Empty / zero overrides leave
+// the original untouched.
 func (c Config) ForLowPower() Config {
 	out := c
 	if c.Mpvpaper.BatteryMpvOpts != "" {
-		out.Mpvpaper.MpvOpts = c.Mpvpaper.BatteryMpvOpts
+		if c.Mpvpaper.MpvOpts == "" {
+			out.Mpvpaper.MpvOpts = c.Mpvpaper.BatteryMpvOpts
+		} else {
+			out.Mpvpaper.MpvOpts = c.Mpvpaper.MpvOpts + " " + c.Mpvpaper.BatteryMpvOpts
+		}
 	}
 	if c.Wpe.FpsBattery > 0 {
 		out.Wpe.Fps = c.Wpe.FpsBattery

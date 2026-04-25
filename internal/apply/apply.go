@@ -5,6 +5,7 @@
 package apply
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -14,6 +15,13 @@ import (
 	"github.com/Vaniell0/wallforge/internal/steam"
 	"github.com/Vaniell0/wallforge/internal/watchdog"
 )
+
+// ErrPaused signals that ByInput refused to render because the system
+// is in Paused mode (battery, or power-saver under PolicyPause). The
+// requested input was queued via state.SavePending; a later resume
+// will pick it up. Callers can use errors.Is(err, ErrPaused) to map
+// this to a 202 Accepted in HTTP contexts or a friendlier CLI message.
+var ErrPaused = errors.New("paused — wallpaper queued for resume, not rendered")
 
 // Result describes the applied wallpaper for caller-side logging.
 type Result struct {
@@ -27,11 +35,12 @@ type Result struct {
 // real Steam tree or executing backend processes. Production code uses
 // the real implementations by default.
 var (
-	resolveSteam  = steam.Resolve
-	selectBackend = engine.Select
-	saveState     = state.Save
-	stopOthers    = engine.StopOthers
-	detectMode    = defaultDetectMode
+	resolveSteam     = steam.Resolve
+	selectBackend    = engine.Select
+	saveState        = state.Save
+	savePendingState = state.SavePending
+	stopOthers       = engine.StopOthers
+	detectMode       = defaultDetectMode
 )
 
 // defaultDetectMode polls the same signals the watchdog Run loop uses,
@@ -44,22 +53,33 @@ func defaultDetectMode(cfg config.Config) watchdog.Mode {
 }
 
 // ByInput classifies input, runs the backend and returns a Result on
-// success. Numeric inputs are resolved against the Steam Workshop content
-// directory; everything else is a filesystem path.
-//
-// The current power mode is auto-detected and the backend is constructed
-// from a mode-adjusted Config — LowPower swaps in battery_mpv_opts and
-// fps_battery; Paused is honoured by stopping every backend instead of
-// applying. Watchdog re-applies on mode transitions, so a profile flip
-// after Apply still produces the right rendering.
+// success. Auto-detects the current power mode — convenience entry
+// point for CLI / web-UI / external callers. The watchdog dispatcher
+// uses ByInputForMode instead to skip the redundant probe.
 func ByInput(cfg config.Config, input string) (Result, error) {
-	mode := detectMode(cfg)
+	return ByInputForMode(cfg, input, detectMode(cfg))
+}
+
+// ByInputForMode is ByInput with the power mode supplied by the caller.
+// Watchdog already computed the mode for its dispatch decision; passing
+// it through avoids a second `powerprofilesctl get` shell-out on every
+// transition (and the race window between two probes — see audit M2).
+//
+// LowPower swaps in cfg.ForLowPower() (battery_mpv_opts, fps_battery);
+// Paused queues the input via state.SavePending and returns ErrPaused.
+func ByInputForMode(cfg config.Config, input string, mode watchdog.Mode) (Result, error) {
 	if mode == watchdog.ModePaused {
 		// Apply on a paused system would just be undone by the
-		// watchdog on its next tick. Persist the request so a later
-		// resume can pick it up, but don't render anything now.
-		_ = saveState(state.Entry{Input: input, AppliedAt: time.Now().UTC()})
-		return Result{}, fmt.Errorf("paused (battery / power-saver) — wallpaper recorded for resume but not rendered")
+		// watchdog on its next tick. Record the *intent* in
+		// pending.json (separate from last.json) so resume can pick
+		// it up without trampling the wallpaper that was actually
+		// rendered before the pause. Surface a save error if it
+		// happens — the only effect of a Paused-Apply is the file
+		// write; silent failure leaves the user unaware.
+		if err := savePendingState(state.Entry{Input: input, AppliedAt: time.Now().UTC()}); err != nil {
+			return Result{}, fmt.Errorf("paused — could not queue for resume: %w", err)
+		}
+		return Result{}, ErrPaused
 	}
 	effective := cfg
 	if mode == watchdog.ModeLowPower {

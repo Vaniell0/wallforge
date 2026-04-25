@@ -371,6 +371,19 @@ func (s *Server) handleApply(w http.ResponseWriter, r *http.Request) {
 	}
 	res, err := apply.ByInput(s.cfg, req.Input)
 	if err != nil {
+		// Paused-mode "error" is really a queued intent — reflect that
+		// in the status code so the front-end can render it as info,
+		// not as a red toast. Don't update lastApplied (we didn't
+		// actually render anything).
+		if errors.Is(err, apply.ErrPaused) {
+			w.WriteHeader(http.StatusAccepted)
+			writeJSON(w, map[string]any{
+				"queued": true,
+				"input":  req.Input,
+				"detail": err.Error(),
+			})
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -466,7 +479,17 @@ func (s *Server) handlePowerResume(w http.ResponseWriter, r *http.Request) {
 	// file (persisted across processes). Falling back to the state
 	// file means clicking Resume right after `wallforge serve` starts
 	// still does the right thing.
+	// Resume target priority: in-process lastApplied → pending (a
+	// Paused-mode Apply we queued earlier) → on-disk last.json.
+	// Pending wins over last but loses to lastApplied — the in-process
+	// value is the most recent successful render in this serve session.
 	target := s.getLastApplied()
+	if target == "" {
+		entry, err := state.ConsumePending()
+		if err == nil && entry.Input != "" {
+			target = entry.Input
+		}
+	}
 	if target == "" {
 		entry, err := state.Load()
 		if err == nil {

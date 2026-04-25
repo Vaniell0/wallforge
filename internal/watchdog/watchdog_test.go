@@ -231,6 +231,54 @@ func TestWatchdog_NoCallbackNoCrash(t *testing.T) {
 	_ = w.Run(ctx)
 }
 
+func TestWatchdog_PpdUnknownDoesNotForcePause(t *testing.T) {
+	// When ppd is unavailable mid-Run (probe error / not installed
+	// after a daemon crash), profile drops to Unknown. The watchdog
+	// must NOT escalate to Paused — Unknown means "no opinion", and
+	// only a real battery transition or an explicit power-saver flag
+	// should pause. Regression for the audit's L2 list.
+	d := &driver{timeline: []tick{
+		{StateAC, power.ProfilePerformance}, // → normal
+		{StateAC, power.ProfileUnknown},     // → still normal (not a transition)
+		{StateAC, power.ProfilePowerSaver},  // → low-power
+		{StateAC, power.ProfileUnknown},     // → back to normal
+	}}
+	var (
+		mu    sync.Mutex
+		modes []Mode
+	)
+	w := &Watchdog{
+		Interval: 5 * time.Millisecond,
+		Policy:   PolicyReduce,
+		OnModeChange: func(m Mode, _ string) {
+			mu.Lock()
+			modes = append(modes, m)
+			mu.Unlock()
+		},
+	}
+	w.detectPower = d.power
+	w.detectProfile = d.profile
+
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	_ = w.Run(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Sequence we want: normal (initial fire), low-power, normal.
+	// Unknown ticks must not generate transitions because Effective
+	// returns the same mode as performance/balanced for an Unknown.
+	want := []Mode{ModeNormal, ModeLowPower, ModeNormal}
+	if len(modes) != len(want) {
+		t.Fatalf("modes = %v, want %v", modes, want)
+	}
+	for i, m := range want {
+		if modes[i] != m {
+			t.Errorf("modes[%d] = %v, want %v", i, modes[i], m)
+		}
+	}
+}
+
 func TestWatchdog_PausePolicyOnPowerSaver(t *testing.T) {
 	// Verify policy=pause downgrades a power-saver profile from
 	// LowPower (default) to Paused.

@@ -250,18 +250,53 @@ func TestByInput_StopsOtherBackendsBeforeApply(t *testing.T) {
 	}
 }
 
-func TestByInput_PausedReturnsErrorAndPersists(t *testing.T) {
+func TestByInput_PausedQueuesPendingNotLast(t *testing.T) {
 	defer stubMode(watchdog.ModePaused)()
 
-	// Capture saveState calls — even when paused, the requested input
-	// must be persisted so a later resume can pick it up.
-	var saved []state.Entry
-	prevSave := saveState
-	saveState = func(e state.Entry) error {
-		saved = append(saved, e)
+	// Capture both pending and last-applied state writers — the
+	// Paused branch must touch pending only. Trampling last would
+	// regress H4: a queued intent overwriting the wallpaper that was
+	// actually rendered before the user went on battery.
+	var pending []state.Entry
+	var last []state.Entry
+	prevPending := savePendingState
+	prevLast := saveState
+	savePendingState = func(e state.Entry) error {
+		pending = append(pending, e)
 		return nil
 	}
-	defer func() { saveState = prevSave }()
+	saveState = func(e state.Entry) error {
+		last = append(last, e)
+		return nil
+	}
+	defer func() {
+		savePendingState = prevPending
+		saveState = prevLast
+	}()
+
+	dir := t.TempDir()
+	img := filepath.Join(dir, "x.png")
+	if err := os.WriteFile(img, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ByInput(config.Default(), img)
+	if !errors.Is(err, ErrPaused) {
+		t.Fatalf("err = %v, want ErrPaused", err)
+	}
+	if len(pending) != 1 || pending[0].Input != img {
+		t.Errorf("pending = %v, want one entry with Input=%q", pending, img)
+	}
+	if len(last) != 0 {
+		t.Errorf("last got written %d times, want 0 — Paused must not touch last.json", len(last))
+	}
+}
+
+func TestByInput_PausedSurfacesSaveError(t *testing.T) {
+	defer stubMode(watchdog.ModePaused)()
+
+	prev := savePendingState
+	savePendingState = func(state.Entry) error { return errors.New("disk full") }
+	defer func() { savePendingState = prev }()
 
 	dir := t.TempDir()
 	img := filepath.Join(dir, "x.png")
@@ -270,14 +305,14 @@ func TestByInput_PausedReturnsErrorAndPersists(t *testing.T) {
 	}
 	_, err := ByInput(config.Default(), img)
 	if err == nil {
-		t.Fatal("expected error in paused mode, got nil")
+		t.Fatal("expected error when pending save fails, got nil")
 	}
-	if len(saved) != 1 || saved[0].Input != img {
-		t.Errorf("saveState calls = %v, want one entry with Input=%q", saved, img)
+	if errors.Is(err, ErrPaused) {
+		t.Errorf("err = %v, must NOT be ErrPaused (silent intent on disk full)", err)
 	}
 }
 
-func TestByInput_LowPowerSwapsConfig(t *testing.T) {
+func TestByInput_LowPowerAppendsBatteryOpts(t *testing.T) {
 	defer stubMode(watchdog.ModeLowPower)()
 
 	dir := t.TempDir()
@@ -286,9 +321,10 @@ func TestByInput_LowPowerSwapsConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Capture the config the backend selector receives so we can prove
-	// the LowPower override actually flowed through. mpv_opts must be
-	// the battery variant; fps must be the battery cap.
+	// Capture the config the backend selector receives. BatteryMpvOpts
+	// must be APPENDED to MpvOpts (so user flags like --mute survive),
+	// not replace it. FpsBattery does replace Fps because lwpe's --fps
+	// is a single scalar.
 	var seen config.Config
 	prev := selectBackend
 	selectBackend = func(_ engine.Target, c config.Config) (engine.Backend, error) {
@@ -298,19 +334,20 @@ func TestByInput_LowPowerSwapsConfig(t *testing.T) {
 	defer func() { selectBackend = prev }()
 
 	cfg := config.Default()
-	cfg.Mpvpaper.MpvOpts = "normal-opts"
-	cfg.Mpvpaper.BatteryMpvOpts = "battery-opts"
+	cfg.Mpvpaper.MpvOpts = "--mute --loop"
+	cfg.Mpvpaper.BatteryMpvOpts = "--hwdec=auto"
 	cfg.Wpe.Fps = 60
 	cfg.Wpe.FpsBattery = 20
 
 	if _, err := ByInput(cfg, vid); err != nil {
 		t.Fatalf("ByInput: %v", err)
 	}
-	if seen.Mpvpaper.MpvOpts != "battery-opts" {
-		t.Errorf("MpvOpts = %q, want battery-opts", seen.Mpvpaper.MpvOpts)
+	want := "--mute --loop --hwdec=auto"
+	if seen.Mpvpaper.MpvOpts != want {
+		t.Errorf("MpvOpts = %q, want %q", seen.Mpvpaper.MpvOpts, want)
 	}
 	if seen.Wpe.Fps != 20 {
-		t.Errorf("Fps = %d, want 20", seen.Wpe.Fps)
+		t.Errorf("Fps = %d, want 20 (FpsBattery replaces Fps)", seen.Wpe.Fps)
 	}
 }
 

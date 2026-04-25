@@ -137,3 +137,110 @@ func TestStaticAssetsServed(t *testing.T) {
 		}
 	}
 }
+
+func TestLastApplied_NoRace(t *testing.T) {
+	// Regression test for audit H1: lastApplied was read by /api/power
+	// and /api/status without taking s.mu, while /api/apply and
+	// /api/stop were writing it from other handlers. go test -race
+	// caught the data race; this test reproduces the contention so a
+	// future refactor that drops the mutex protection trips CI.
+	srv, _ := newTestServer(t)
+
+	const iters = 200
+	done := make(chan struct{}, 3)
+
+	go func() {
+		for i := 0; i < iters; i++ {
+			srv.setLastApplied("a")
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		for i := 0; i < iters; i++ {
+			srv.setLastApplied("b")
+		}
+		done <- struct{}{}
+	}()
+	go func() {
+		for i := 0; i < iters; i++ {
+			_ = srv.getLastApplied()
+		}
+		done <- struct{}{}
+	}()
+	for i := 0; i < 3; i++ {
+		<-done
+	}
+}
+
+func TestCSRFRejectsCrossOriginPost(t *testing.T) {
+	// Drive-by browser fetch with cross-site Sec-Fetch-Site or with
+	// an Origin from a different host must be rejected on every
+	// state-mutating endpoint.
+	srv, _ := newTestServer(t)
+	endpoints := []string{
+		"/api/apply",
+		"/api/stop",
+		"/api/power/pause",
+		"/api/power/resume",
+	}
+	for _, ep := range endpoints {
+		req := httptest.NewRequest(http.MethodPost, ep, nil)
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+		rr := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Errorf("%s with cross-site Sec-Fetch-Site: got %d, want 403", ep, rr.Code)
+		}
+	}
+}
+
+func TestCSRFAcceptsSameOriginPost(t *testing.T) {
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/stop", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rr := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rr, req)
+	// Stop returns 200 even when no backends were running (StopAll
+	// errors are not fatal). Just assert "not 403".
+	if rr.Code == http.StatusForbidden {
+		t.Errorf("same-origin POST got 403")
+	}
+}
+
+func TestCSRFAcceptsBareCurl(t *testing.T) {
+	// curl / native clients send neither Sec-Fetch-Site nor Origin.
+	// Must pass through — the API has many non-browser users.
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodPost, "/api/stop", nil)
+	rr := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rr, req)
+	if rr.Code == http.StatusForbidden {
+		t.Errorf("bare POST (no Sec-Fetch, no Origin) got 403")
+	}
+}
+
+func TestPowerEndpointShape(t *testing.T) {
+	// /api/power must return the new schema: mode + reason +
+	// power_saver_policy. Front-end depends on these field names.
+	srv, _ := newTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/power", nil)
+	rr := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rr, req)
+	if rr.Code != 200 {
+		t.Fatalf("status %d", rr.Code)
+	}
+	var dto PowerDTO
+	if err := json.Unmarshal(rr.Body.Bytes(), &dto); err != nil {
+		t.Fatal(err)
+	}
+	// Mode must be one of the known values; profile is whatever the
+	// host returns (likely "performance" or "unknown").
+	switch dto.Mode {
+	case "normal", "low-power", "paused":
+	default:
+		t.Errorf("unexpected mode: %q", dto.Mode)
+	}
+	if dto.PowerSaverPolicy == "" {
+		t.Errorf("PowerSaverPolicy empty — should default to 'reduce'")
+	}
+}

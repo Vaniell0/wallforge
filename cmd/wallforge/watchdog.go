@@ -26,19 +26,33 @@ func cmdWatchdog(cfg config.Config) error {
 				fmt.Fprintf(os.Stderr, "wallforge watchdog: stop: %v\n", e)
 			}
 		case watchdog.ModeNormal, watchdog.ModeLowPower:
-			// Both Normal and LowPower call apply.ByInput — apply
-			// auto-detects the current mode and picks the right cfg
-			// override (battery_mpv_opts / fps_battery in LowPower).
-			entry, err := state.Load()
-			if err != nil || entry.Input == "" {
-				return
+			// Resume target priority: pending (queued during Paused)
+			// → last-applied. If pending exists, consume it (delete
+			// the file) so the same intent doesn't keep re-firing
+			// every transition.
+			entry, err := state.ConsumePending()
+			pending := entry.Input != ""
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: pending state: %v\n", err)
+			}
+			if !pending {
+				entry, err = state.Load()
+				if err != nil || entry.Input == "" {
+					return
+				}
+			}
+			source := "last"
+			if pending {
+				source = "pending"
 			}
 			if mode == watchdog.ModeLowPower {
-				fmt.Fprintf(os.Stderr, "wallforge watchdog: low-power (%s) — re-applying %s\n", reason, entry.Input)
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: low-power (%s) — applying %s [%s]\n", reason, entry.Input, source)
 			} else {
-				fmt.Fprintf(os.Stderr, "wallforge watchdog: normal — restoring %s\n", entry.Input)
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: normal — applying %s [%s]\n", entry.Input, source)
 			}
-			if _, err := apply.ByInput(cfg, entry.Input); err != nil {
+			// Pass mode explicitly so apply doesn't re-probe ppd —
+			// avoids the H3 timeout doubling and the M2 race window.
+			if _, err := apply.ByInputForMode(cfg, entry.Input, mode); err != nil {
 				fmt.Fprintf(os.Stderr, "wallforge watchdog: apply: %v\n", err)
 			}
 		}
