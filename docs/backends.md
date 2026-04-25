@@ -58,13 +58,20 @@ configuration across machines.
 
 1. Kill any existing mpvpaper instances (same tool, same output would
    leak GPU memory).
-2. `mpvpaper -f -o "<cfg.mpvpaper.mpv_opts>" <cfg.mpvpaper.target> <path>`
-   — `-f` forks mpvpaper to background after window attach.
-3. `cmd.Process.Release()` — detach from wallforge so the child lives
-   past CLI exit.
+2. `mpvpaper -o "<cfg.mpvpaper.mpv_opts>" <cfg.mpvpaper.target> <path>`
+3. `cmd.Process.Release()` + `SysProcAttr{Setsid: true}` — detach from
+   wallforge so the child lives past CLI exit, in its own session and
+   process group.
+4. `setNicePGroup(pid, cfg.mpvpaper.nice)` — `setpriority(PRIO_PGRP)`
+   on the child's pgid lowers every helper thread mpv forks (decoder,
+   GL submitter, etc.).
 
-`SysProcAttr{Setsid: true}` gives the child its own session, insulating
-it from systemd tearing down the parent.
+We deliberately omit mpvpaper's `-f` self-fork flag. With `-f`, the
+short-lived parent we niced exits within milliseconds and the
+daemonized child inherits default priority — the niceness adjustment
+becomes a silent no-op. Letting mpvpaper run "in foreground" plus our
+own Setsid + Release achieves the same detachment without losing the
+priority change.
 
 ### The `killByExeName` dance
 
@@ -85,6 +92,11 @@ distro, wrapped or not.
   videos without it will burn a core.
 - Default `--loop-file=inf` loops forever. Wallpaper semantics, not
   playback.
+- `cfg.mpvpaper.nice` (default 10) lowers the process-group priority
+  so foreground stays responsive on a CPU-bound build.
+- `cfg.mpvpaper.battery_mpv_opts` is appended in LowPower mode (AC +
+  power-saver profile). Default adds `--hwdec=auto --cache-secs=2
+  --video-sync=display-vdrop` to whatever your base `mpv_opts` is.
 
 ## linux-wallpaperengine — scene / web Wallpaper Engine content
 
@@ -122,8 +134,14 @@ End result: `nix build .#linux-wallpaperengine` produces
 
 - `fps: 30` is the default. Lower (`fps: 15`) doesn't obviously
   degrade perceived smoothness but halves energy.
+- `cfg.wpe.fps_battery` (default 15) replaces `fps` in LowPower mode.
+  lwpe's `--fps` is a single scalar so this substitutes, not appends.
 - `silent: true` disables scene audio — wallpaper.
 - `screen: ""` picks the first output. Set to `eDP-1` etc. to pin it.
+- `cfg.wpe.nice` (default 10) is applied via `PRIO_PGRP` after spawn
+  so it catches every CEF helper (renderer, gpu, utility) — these
+  forks happen right after launch and would otherwise stay at default
+  priority.
 
 ## Why stopping others matters
 

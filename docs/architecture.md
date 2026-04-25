@@ -45,13 +45,19 @@ the first time.
 
 Supporting packages (pure I/O, no cross-package calls):
 
-- `config` — loads/saves `~/.config/wallforge/config.json`
-- `state` — persists the last-applied wallpaper to
-  `$XDG_STATE_HOME/wallforge/last.json`
+- `config` — loads/saves `~/.config/wallforge/config.json`. `Config.ForLowPower()`
+  returns a per-mode-tuned copy (battery_mpv_opts appended, fps_battery substituted).
+- `state` — `last.json` is the actually-rendered wallpaper; `pending.json`
+  is a paused-mode intent waiting for resume. `ConsumePending` atomically
+  loads + clears so the same intent doesn't re-fire on every transition.
 - `library` — walks `config.library.roots` and returns indexed items
 - `workspace` — Hyprland `.socket2` event parser + bindings store in
   `$XDG_STATE_HOME/wallforge/workspaces.json`
-- `watchdog` — `/sys/class/power_supply/BAT*/status` poll loop
+- `power` — `powerprofilesctl get` wrapper with 2s timeout. Returns
+  typed `Profile` enum; distinguishes `ErrNotInstalled` from `ErrTimeout`.
+- `watchdog` — combined sysfs (AC/battery) + ppd (profile) detection.
+  Three-mode FSM: `Normal` / `LowPower` / `Paused`. `EffectiveMode(snap, policy)`
+  is a pure function; `Run` polls every 15s and dispatches `OnModeChange`.
 
 ## Data flow: `wallforge apply <input>`
 
@@ -61,28 +67,42 @@ Supporting packages (pure I/O, no cross-package calls):
                                                   ▼
                                            apply.ByInput
                                                   │
-                            input is numeric ─────┴──► steam.Resolve
-                                                  │         │
-                                                  │◄────path
-                                                  │
                                                   ▼
-                                           engine.Detect
+                                          watchdog.EffectiveMode
                                                   │
-                                        file: by extension
-                                        dir : workshop.ParseDir
-                                                  │
-                                                  ▼
-                                           engine.Select
-                                                  │
-                                                  ▼
-                                       engine.StopOthers
-                                                  │
-                                                  ▼
-                                           backend.Apply
-                                                  │
-                                                  ▼
-                                           state.Save
+                              ┌───────────────────┼───────────────────┐
+                              │                   │                   │
+                          Paused              LowPower             Normal
+                              │                   │                   │
+                              ▼                   │                   │
+                       state.SavePending   cfg.ForLowPower()           │
+                       return ErrPaused           │                    │
+                                                  ▼                    ▼
+                                           (effective cfg)       (raw cfg)
+                                                  │                    │
+                                                  └──────────┬─────────┘
+                                                             ▼
+                                                      engine.Detect
+                                                             │
+                                                  file: by extension
+                                                  dir : workshop.ParseDir
+                                                             │
+                                                             ▼
+                                                      engine.Select
+                                                             │
+                                                             ▼
+                                                  engine.StopOthers
+                                                             │
+                                                             ▼
+                                                      backend.Apply
+                                                             │
+                                                             ▼
+                                                      state.Save
 ```
+
+The watchdog calls `apply.ByInputForMode` instead of `ByInput` to skip
+the redundant ppd probe — it already computed the mode for its own
+dispatch decision.
 
 ## Data flow: web-UI apply
 
@@ -106,19 +126,57 @@ arbitrary filesystem path.
 
 ## Overridable seams
 
-`apply.ByInput` exposes four package-level function variables so tests
-can stub each side-effect independently:
+`apply.ByInput` exposes package-level function variables so tests can
+stub each side-effect independently:
 
-| Var            | Production default | Purpose                  |
-|----------------|--------------------|--------------------------|
-| `resolveSteam` | `steam.Resolve`    | numeric ID → path        |
-| `selectBackend`| `engine.Select`    | Target → Backend         |
-| `stopOthers`   | `engine.StopOthers`| clear other layers       |
-| `saveState`    | `state.Save`       | persist last-applied     |
+| Var                | Production default     | Purpose                                    |
+|--------------------|------------------------|--------------------------------------------|
+| `resolveSteam`     | `steam.Resolve`        | numeric ID → path                          |
+| `selectBackend`    | `engine.Select`        | Target → Backend                           |
+| `stopOthers`       | `engine.StopOthers`    | clear other layers                         |
+| `saveState`        | `state.Save`           | persist last-applied (`last.json`)         |
+| `savePendingState` | `state.SavePending`    | persist paused-mode intent (`pending.json`)|
+| `detectMode`       | live ppd + sysfs probe | resolve current power Mode                 |
 
-`internal/apply/apply_test.go` overrides `saveState` and `stopOthers`
-in `TestMain` so no test accidentally writes to `$XDG_STATE_HOME` or
-shells out to `awww` / `pkill`.
+`internal/apply/apply_test.go` overrides everything in `TestMain` so
+no test accidentally writes to `$XDG_STATE_HOME`, shells out to
+backends, or consults the host's real power state. Tests that need a
+specific mode use `stubMode(watchdog.ModeLowPower)` etc.
+
+## Power modes
+
+Wallforge tracks one of three operating modes computed from two
+signals:
+
+| Signal       | Source                                            |
+|--------------|---------------------------------------------------|
+| AC / battery | `/sys/class/power_supply/BAT*/status`             |
+| ppd profile  | `powerprofilesctl get` (2s timeout, optional)     |
+
+`watchdog.EffectiveMode(snapshot, policy)` is the pure function that
+collapses both into one of:
+
+| Mode       | When                                                                |
+|------------|---------------------------------------------------------------------|
+| `Normal`   | AC + (performance / balanced / unknown)                             |
+| `LowPower` | AC + power-saver, when `power_saver_policy = "reduce"` (default)    |
+| `Paused`   | Battery (always) — or AC + power-saver under `policy = "pause"`     |
+
+`policy = "ignore"` collapses LowPower into Normal — useful if you
+explicitly want wallpapers running unchanged in power-saver.
+
+Mode flips drive `apply.ByInputForMode`:
+
+- **Normal** → render with raw config.
+- **LowPower** → render with `cfg.ForLowPower()`. `mpvpaper.battery_mpv_opts`
+  is appended to `mpv_opts`; `wpe.fps_battery` replaces `wpe.fps`.
+- **Paused** → don't render; if a user requested an Apply, queue it
+  to `state.SavePending` (separate file from `last.json`). The next
+  resume picks up pending first, falling back to last on miss.
+
+`/api/power` exposes the current mode, reason, profile, and policy
+to the web-UI; the front-end paints a status badge and Pause/Resume
+buttons.
 
 ## Why stdlib-first
 
