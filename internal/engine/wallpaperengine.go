@@ -21,6 +21,7 @@ type WallpaperEngine struct {
 	screen string
 	fpsCap int
 	silent bool
+	nice   int
 }
 
 func NewWallpaperEngine(cfg config.WpeConfig) *WallpaperEngine {
@@ -28,6 +29,7 @@ func NewWallpaperEngine(cfg config.WpeConfig) *WallpaperEngine {
 		screen: cfg.Screen,
 		fpsCap: cfg.Fps,
 		silent: cfg.Silent,
+		nice:   cfg.Nice,
 	}
 }
 
@@ -86,6 +88,12 @@ func (w *WallpaperEngine) Apply(path string) error {
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start linux-wallpaperengine: %w", err)
+	}
+	// lwpe is the heaviest backend; nice it down before the GL scene
+	// ramps so the niceness applies to every CEF / decoder thread it
+	// spawns from here (children inherit nice).
+	if err := setNice(cmd.Process.Pid, w.nice); err != nil {
+		fmt.Fprintf(os.Stderr, "wallforge lwpe: %v\n", err)
 	}
 	return cmd.Process.Release()
 }

@@ -71,3 +71,30 @@ func parsePID(s string) (int, error) {
 	}
 	return n, nil
 }
+
+// setNice lowers (or, if invoked with a negative value by a privileged
+// process, raises) the scheduling priority of pid. We only ever set
+// positive nice values from wallforge — that just means "be polite to
+// the foreground" and needs no capabilities.
+//
+// Called after cmd.Start(): the child has its own session/pgrp courtesy
+// of Setsid, so PRIO_PROCESS on its pid is enough. Errors are returned
+// for logging but never abort an Apply — the wallpaper rendering is
+// strictly more important than the niceness adjustment.
+func setNice(pid, nice int) error {
+	if nice == 0 {
+		return nil
+	}
+	// Clamp to the kernel's accepted range. POSIX says EINVAL outside
+	// [-20, 19]; we silently clamp to spare callers a noisy error.
+	if nice > 19 {
+		nice = 19
+	}
+	if nice < -20 {
+		nice = -20
+	}
+	if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, nice); err != nil {
+		return fmt.Errorf("setpriority(pid=%d, nice=%d): %w", pid, nice, err)
+	}
+	return nil
+}

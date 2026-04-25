@@ -42,12 +42,20 @@ type SwwwConfig struct {
 type MpvpaperConfig struct {
 	Target  string `json:"target"`
 	MpvOpts string `json:"mpv_opts"`
+	// Nice is the scheduling priority adjustment applied after the
+	// mpvpaper process is spawned. Positive values lower its CPU
+	// priority so the foreground stays snappy; 0 disables the call.
+	Nice int `json:"nice"`
 }
 
 type WpeConfig struct {
 	Fps    int    `json:"fps"`
 	Silent bool   `json:"silent"`
 	Screen string `json:"screen"`
+	// Nice — see MpvpaperConfig.Nice. lwpe is the heaviest backend
+	// (full GL scene); a polite default keeps a CPU-bound build
+	// from stuttering when a wallpaper happens to spike.
+	Nice int `json:"nice"`
 }
 
 // LibraryConfig tells the scanner which local directories to index as
@@ -75,10 +83,12 @@ func Default() Config {
 		Mpvpaper: MpvpaperConfig{
 			Target:  "*",
 			MpvOpts: "no-audio --loop-file=inf --panscan=1.0",
+			Nice:    10,
 		},
 		Wpe: WpeConfig{
 			Fps:    30,
 			Silent: true,
+			Nice:   10,
 		},
 		Library: LibraryConfig{
 			Roots: []string{"~/Pictures/Wallpapers"},

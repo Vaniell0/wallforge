@@ -17,10 +17,11 @@ import (
 type Mpvpaper struct {
 	target  string
 	mpvOpts string
+	nice    int
 }
 
 func NewMpvpaper(cfg config.MpvpaperConfig) *Mpvpaper {
-	return &Mpvpaper{target: cfg.Target, mpvOpts: cfg.MpvOpts}
+	return &Mpvpaper{target: cfg.Target, mpvOpts: cfg.MpvOpts, nice: cfg.Nice}
 }
 
 func (m *Mpvpaper) Name() string { return "mpvpaper" }
@@ -55,6 +56,12 @@ func (m *Mpvpaper) Apply(path string) error {
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start mpvpaper: %w", err)
+	}
+	// Lower the freshly-spawned process before it ramps up — a video
+	// decode pipeline that's been niced from the start never gets to
+	// fight the foreground for cycles.
+	if err := setNice(cmd.Process.Pid, m.nice); err != nil {
+		fmt.Fprintf(os.Stderr, "wallforge mpvpaper: %v\n", err)
 	}
 	// Detach so the child survives after the CLI exits.
 	return cmd.Process.Release()
