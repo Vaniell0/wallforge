@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased — power modes
+
+### New
+
+- **Three-mode power state machine** (`watchdog.Mode`): Normal /
+  LowPower / Paused. Battery → Paused unconditionally; AC +
+  power-saver profile → policy-driven via `watchdog.power_saver_policy`
+  (`reduce` (default) → LowPower; `pause` → Paused; `ignore` → Normal).
+- **Per-mode backend tuning**: `mpvpaper.battery_mpv_opts` is appended
+  to `mpv_opts` in LowPower (so user base flags survive); `wpe.fps_battery`
+  replaces `fps`. Defaults add hwdec + reduced cache + display-vdrop
+  for mpv and 15 fps for lwpe.
+- **Backend niceness**: `mpvpaper.nice` and `wpe.nice` (default 10)
+  apply via `setpriority(PRIO_PGRP)` after spawn — catches CEF
+  helpers and decoder threads, not just the main process.
+- **ppd integration**: `internal/power` wraps `powerprofilesctl get`
+  with a 2s timeout; missing tool falls back gracefully to AC/battery
+  detection.
+- **Web-UI power surface**: `GET /api/power` (mode/reason/profile/
+  policy/last_applied), `POST /api/power/{pause,resume}`. Status
+  badge + Pause/Resume controls in the UI.
+- **Pending-intent state**: paused-mode Apply queues to
+  `pending.json` separately from `last.json`. Watchdog and
+  `wallforge resume` consume pending first, fall back to last.
+
+### Changed
+
+- `apply.ByInput` auto-detects the current mode and returns
+  `ErrPaused` (typed error) when refusing to render. Web-UI surfaces
+  this as 202 Accepted — a queued intent is not a failure.
+- Removed `mpvpaper -f` self-fork flag (was making `nice` a silent
+  no-op). Detachment now via Setsid + Process.Release.
+
+### Security
+
+- CSRF guard on state-mutating endpoints (`/api/apply`, `/api/stop`,
+  `/api/power/{pause,resume}`): rejects cross-site Sec-Fetch-Site
+  and cross-host Origin headers; allows curl / native clients.
+- `webui.New` warns to stderr when bound to non-loopback addr.
+
+### Fixed
+
+- Data race on `webui.Server.lastApplied` (concurrent /api/apply +
+  /api/power reads).
+- `state.Save` no longer overwrites `last.json` when Apply is
+  refused due to Paused mode.
+- `setpriority` no longer fires against the wrong PID for mpvpaper
+  (parent exited within milliseconds, leaving the daemonized child
+  at default nice).
+
 ## 0.1.0-alpha — 2026-04-24
 
 Feature-complete alpha. Everything in the roadmap up to "per-monitor

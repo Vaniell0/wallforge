@@ -1,23 +1,33 @@
-// Package watchdog suspends wallpaper backends while the machine is on
-// battery. Only video/scene backends meaningfully benefit — a static
-// image has no runtime cost — so the watchdog calls engine.StopAll on
-// a battery transition and triggers apply.ByInput(last) on AC return.
+// Package watchdog tracks the system power signal and fires callbacks
+// on transitions between three operating modes:
 //
-// We poll /sys/class/power_supply/BAT*/status rather than subscribe to
-// UPower / power-profiles-daemon DBus so wallforge keeps its stdlib-only
-// dependency posture.
+//   - Normal     — full-quality rendering (AC + perf/balanced profile)
+//   - LowPower   — reduced rendering (battery-tuned mpv opts, lower lwpe fps)
+//   - Paused     — backends stopped (always on battery; opt-in on power-saver)
+//
+// Two signals feed the decision:
+//
+//   - sysfs `/sys/class/power_supply/BAT*/status` — AC vs battery
+//   - power-profiles-daemon `powerprofilesctl get` — performance / balanced / power-saver
+//
+// We poll instead of subscribing to UPower / ppd D-Bus signals so
+// wallforge keeps its stdlib-only dependency posture.
 package watchdog
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Vaniell0/wallforge/internal/power"
 )
 
 // PowerState is binary on purpose — "battery" vs "AC". Finer-grained
-// detection (battery level, low-power profile) can layer on top later.
+// distinctions live in power.Profile, not here.
 type PowerState int
 
 const (
@@ -36,11 +46,67 @@ func (s PowerState) String() string {
 	return "unknown"
 }
 
+// Mode is the watchdog's effective output: what should wallforge be
+// doing right now. Order matters for tests / logs but not for logic.
+type Mode int
+
+const (
+	ModeUnknown Mode = iota
+	ModeNormal
+	ModeLowPower
+	ModePaused
+)
+
+func (m Mode) String() string {
+	switch m {
+	case ModeNormal:
+		return "normal"
+	case ModeLowPower:
+		return "low-power"
+	case ModePaused:
+		return "paused"
+	}
+	return "unknown"
+}
+
+// PowerSaverPolicy decides how to react when ppd reports the
+// power-saver profile. battery → ModePaused is hardcoded; this knob
+// only affects the AC + power-saver corner.
+type PowerSaverPolicy int
+
+const (
+	PolicyReduce PowerSaverPolicy = iota // default: drop to LowPower
+	PolicyPause                          // full stop on power-saver
+	PolicyIgnore                         // pretend ppd said balanced
+)
+
+// ParsePolicy maps a config string to the typed enum. Unknown values
+// silently fall back to the default (Reduce) so a typo can't brick
+// the watchdog.
+func ParsePolicy(s string) PowerSaverPolicy {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "pause":
+		return PolicyPause
+	case "ignore":
+		return PolicyIgnore
+	}
+	return PolicyReduce
+}
+
+func (p PowerSaverPolicy) String() string {
+	switch p {
+	case PolicyPause:
+		return "pause"
+	case PolicyIgnore:
+		return "ignore"
+	}
+	return "reduce"
+}
+
 // Detect reports the current power state by scanning every BAT* node
 // under /sys/class/power_supply. A battery with status "Discharging"
-// means we're on battery; any other status (Charging, Full, Not
-// charging) means AC is plugged in. Desktop machines with no battery
-// at all return StateAC.
+// means we're on battery; any other status means AC. Desktop machines
+// with no battery at all return StateAC.
 func Detect() PowerState {
 	return detectIn("/sys/class/power_supply")
 }
@@ -50,8 +116,6 @@ func detectIn(root string) PowerState {
 	if err != nil || len(matches) == 0 {
 		return StateAC
 	}
-	// If any battery reports Discharging, treat the whole system as
-	// on battery. Users rarely have two batteries charging at once.
 	for _, p := range matches {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -64,38 +128,103 @@ func detectIn(root string) PowerState {
 	return StateAC
 }
 
-// Watchdog polls Detect on Interval and dispatches transitions to
-// OnBattery / OnAC. State is tracked so each function fires exactly
-// once per transition.
-type Watchdog struct {
-	Interval  time.Duration
-	OnBattery func()
-	OnAC      func()
-	detect    func() PowerState // overridable in tests
+// Snapshot is the combined power view at a single instant. Exposed so
+// the web-UI can render the same fields the watchdog acts on.
+type Snapshot struct {
+	Power   PowerState
+	Profile power.Profile
 }
 
-// New constructs a Watchdog with the real Detect. Callers can replace
-// the detect field directly in tests if they need to inject state.
-func New(interval time.Duration, onBattery, onAC func()) *Watchdog {
-	return &Watchdog{
-		Interval:  interval,
-		OnBattery: onBattery,
-		OnAC:      onAC,
-		detect:    Detect,
+// EffectiveMode collapses (Snapshot, Policy) into a single Mode + a
+// short human-readable reason describing the dominant signal.
+//
+// Decision table:
+//
+//	battery        + (anything)        → Paused, "battery"
+//	AC             + power-saver       → policy-driven
+//	AC             + perf / balanced   → Normal
+//
+// Battery is non-negotiable: wallforge will not run video / scene
+// backends on battery regardless of the ppd profile.
+func EffectiveMode(s Snapshot, policy PowerSaverPolicy) (Mode, string) {
+	if s.Power == StateBattery {
+		return ModePaused, "battery"
 	}
+	if s.Profile == power.ProfilePowerSaver {
+		switch policy {
+		case PolicyPause:
+			return ModePaused, "power-saver"
+		case PolicyIgnore:
+			return ModeNormal, ""
+		}
+		return ModeLowPower, "power-saver"
+	}
+	return ModeNormal, ""
+}
+
+// Watchdog polls the combined signal on Interval and dispatches
+// OnModeChange exactly once per change. Detection seams (detectPower /
+// detectProfile) are overridable for tests.
+type Watchdog struct {
+	Interval time.Duration
+	Policy   PowerSaverPolicy
+	// OnModeChange fires on every effective-mode transition (and on
+	// the first tick so callers can reconcile state from boot).
+	OnModeChange func(mode Mode, reason string)
+
+	detectPower   func() PowerState
+	detectProfile func() power.Profile
+}
+
+// New constructs a Watchdog wired to the real sysfs + ppd detectors.
+func New(interval time.Duration, policy PowerSaverPolicy, onModeChange func(Mode, string)) *Watchdog {
+	return &Watchdog{
+		Interval:      interval,
+		Policy:        policy,
+		OnModeChange:  onModeChange,
+		detectPower:   Detect,
+		detectProfile: defaultProfileDetector,
+	}
+}
+
+// defaultProfileDetector wraps power.Detect and silently maps "ppd not
+// installed" to ProfileUnknown — the watchdog should keep working on
+// hosts without ppd. Real errors (ran-but-failed) bubble to stderr;
+// we still return Unknown so the effective decision is "no opinion".
+func defaultProfileDetector() power.Profile {
+	p, err := power.Detect()
+	if err != nil && !errors.Is(err, power.ErrNotInstalled) {
+		fmt.Fprintf(os.Stderr, "wallforge watchdog: ppd probe failed: %v\n", err)
+	}
+	return p
+}
+
+// Snapshot returns the current power view without firing callbacks.
+// Web-UI and tests use this; the Run loop computes its own each tick.
+func (w *Watchdog) Snapshot() Snapshot {
+	if w.detectPower == nil {
+		w.detectPower = Detect
+	}
+	if w.detectProfile == nil {
+		w.detectProfile = defaultProfileDetector
+	}
+	return Snapshot{Power: w.detectPower(), Profile: w.detectProfile()}
 }
 
 // Run blocks until ctx is cancelled. The first tick snapshots the
-// initial state and fires the corresponding callback — a fresh boot
-// on battery still lets the user see the "battery" path run.
+// initial state and fires OnModeChange — a fresh boot already in
+// LowPower / Paused still lets the caller see the corresponding path.
 func (w *Watchdog) Run(ctx context.Context) error {
-	if w.detect == nil {
-		w.detect = Detect
+	if w.detectPower == nil {
+		w.detectPower = Detect
 	}
-	// Initial fire so callers don't have to reconcile state themselves.
-	state := w.detect()
-	w.dispatch(state)
-	last := state
+	if w.detectProfile == nil {
+		w.detectProfile = defaultProfileDetector
+	}
+	mode, reason := EffectiveMode(w.Snapshot(), w.Policy)
+	w.dispatch(mode, reason)
+	lastMode := mode
+	lastReason := reason
 
 	ticker := time.NewTicker(w.Interval)
 	defer ticker.Stop()
@@ -104,24 +233,21 @@ func (w *Watchdog) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			now := w.detect()
-			if now != last {
-				w.dispatch(now)
-				last = now
+			now, r := EffectiveMode(w.Snapshot(), w.Policy)
+			// Re-fire on either a mode flip or, while staying in a
+			// non-Normal mode, a change in reason — the dispatcher
+			// log line stays coherent for the user that way.
+			if now != lastMode || (now != ModeNormal && r != lastReason) {
+				w.dispatch(now, r)
+				lastMode = now
+				lastReason = r
 			}
 		}
 	}
 }
 
-func (w *Watchdog) dispatch(s PowerState) {
-	switch s {
-	case StateBattery:
-		if w.OnBattery != nil {
-			w.OnBattery()
-		}
-	case StateAC:
-		if w.OnAC != nil {
-			w.OnAC()
-		}
+func (w *Watchdog) dispatch(mode Mode, reason string) {
+	if w.OnModeChange != nil {
+		w.OnModeChange(mode, reason)
 	}
 }

@@ -108,9 +108,62 @@ journalctl --user -u wallforge-workspace -n 50
 ## `wallforge watchdog` fires for no reason on a desktop
 
 A desktop with no `/sys/class/power_supply/BAT*` returns `StateAC` and
-the OnAC callback fires once on start. Expected. Subsequent checks
-won't fire without a state change, so it's a one-time
-`wallforge resume` on boot.
+the initial OnModeChange(Normal) callback fires once on start.
+Expected. Subsequent ticks don't re-fire without a transition, so it's
+a one-time `wallforge resume` on boot.
+
+## "I switched to power-saver and the wallpaper didn't change"
+
+Two possible reasons:
+
+1. **The watchdog isn't running.** `programs.wallforge.watchdog.enable
+   = true` in HM. Or invoke `wallforge watchdog` directly to test.
+2. **You're on `power_saver_policy = "ignore"`.** Check via:
+   ```bash
+   curl -s http://127.0.0.1:7777/api/power | jq .power_saver_policy
+   ```
+   Default is `"reduce"` which drops into LowPower (re-applies with
+   `battery_mpv_opts` + `fps_battery`). `"ignore"` is opt-in and
+   keeps Normal-quality rendering.
+
+The watchdog poll is 15s — wait at least that long after toggling
+ppd before assuming it didn't work. Tail the journal to confirm:
+
+```bash
+journalctl --user -u wallforge-watchdog -f
+```
+
+You'll see `low-power (power-saver) — applying ...` lines on each
+mode flip.
+
+## "Web-UI says paused but I'm on AC"
+
+`/api/power` reports two pause states:
+
+- `mode == "paused"` — the watchdog says paused (battery, or
+  power-saver under `policy = "pause"`).
+- `user_paused == true` — you (or someone in another browser tab)
+  clicked Pause manually.
+
+These are independent. Manual pause survives until you hit Resume or
+a successful Apply. Battery pause clears the moment AC returns.
+
+## "powerprofilesctl is hanging"
+
+ppd's D-Bus interface can lock up briefly during daemon restart. The
+2s timeout in `internal/power/profile.go` keeps wallforge from getting
+stuck — you'll see logs like:
+
+```
+wallforge watchdog: ppd probe failed: power: powerprofilesctl timed out: ...
+```
+
+Watchdog continues with `ProfileUnknown` (treated as no-opinion =
+Normal) until the next probe succeeds. Restart ppd if it persists:
+
+```bash
+sudo systemctl restart power-profiles-daemon
+```
 
 ## "The hero screenshot looks wrong on my fork"
 

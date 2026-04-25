@@ -10,16 +10,28 @@ import (
 	"github.com/Vaniell0/wallforge/internal/config"
 	"github.com/Vaniell0/wallforge/internal/engine"
 	"github.com/Vaniell0/wallforge/internal/state"
+	"github.com/Vaniell0/wallforge/internal/watchdog"
 )
 
-// Disable state persistence + cross-backend stop for the whole test
-// suite — ByInput writes to $XDG_STATE_HOME on success, and it also
-// calls engine.StopOthers which would shell out to awww/pkill. Tests
-// don't care about either side effect.
+// Disable state persistence + cross-backend stop + mode detection for
+// the whole test suite. ByInput would otherwise write to
+// $XDG_STATE_HOME, shell out via StopOthers, and consult the host's
+// real sysfs/ppd state — none of which is what these tests are about.
+// Mode-aware behaviour gets its own tests below with explicit stubs.
 func TestMain(m *testing.M) {
 	saveState = func(state.Entry) error { return nil }
 	stopOthers = func(engine.Backend, config.Config) {}
+	detectMode = func(config.Config) watchdog.Mode { return watchdog.ModeNormal }
 	os.Exit(m.Run())
+}
+
+// stubMode swaps detectMode for the duration of a test. Use it when a
+// test needs a non-Normal mode; the TestMain default is ModeNormal so
+// the legacy suite stays unaffected.
+func stubMode(m watchdog.Mode) func() {
+	prev := detectMode
+	detectMode = func(config.Config) watchdog.Mode { return m }
+	return func() { detectMode = prev }
 }
 
 // fakeBackend records each Apply call so a test can assert what
@@ -235,5 +247,122 @@ func TestByInput_StopsOtherBackendsBeforeApply(t *testing.T) {
 	}
 	if !stopCalledBefore {
 		t.Error("stopOthers was not called")
+	}
+}
+
+func TestByInput_PausedQueuesPendingNotLast(t *testing.T) {
+	defer stubMode(watchdog.ModePaused)()
+
+	// Capture both pending and last-applied state writers — the
+	// Paused branch must touch pending only. Trampling last would
+	// regress H4: a queued intent overwriting the wallpaper that was
+	// actually rendered before the user went on battery.
+	var pending []state.Entry
+	var last []state.Entry
+	prevPending := savePendingState
+	prevLast := saveState
+	savePendingState = func(e state.Entry) error {
+		pending = append(pending, e)
+		return nil
+	}
+	saveState = func(e state.Entry) error {
+		last = append(last, e)
+		return nil
+	}
+	defer func() {
+		savePendingState = prevPending
+		saveState = prevLast
+	}()
+
+	dir := t.TempDir()
+	img := filepath.Join(dir, "x.png")
+	if err := os.WriteFile(img, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ByInput(config.Default(), img)
+	if !errors.Is(err, ErrPaused) {
+		t.Fatalf("err = %v, want ErrPaused", err)
+	}
+	if len(pending) != 1 || pending[0].Input != img {
+		t.Errorf("pending = %v, want one entry with Input=%q", pending, img)
+	}
+	if len(last) != 0 {
+		t.Errorf("last got written %d times, want 0 — Paused must not touch last.json", len(last))
+	}
+}
+
+func TestByInput_PausedSurfacesSaveError(t *testing.T) {
+	defer stubMode(watchdog.ModePaused)()
+
+	prev := savePendingState
+	savePendingState = func(state.Entry) error { return errors.New("disk full") }
+	defer func() { savePendingState = prev }()
+
+	dir := t.TempDir()
+	img := filepath.Join(dir, "x.png")
+	if err := os.WriteFile(img, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ByInput(config.Default(), img)
+	if err == nil {
+		t.Fatal("expected error when pending save fails, got nil")
+	}
+	if errors.Is(err, ErrPaused) {
+		t.Errorf("err = %v, must NOT be ErrPaused (silent intent on disk full)", err)
+	}
+}
+
+func TestByInput_LowPowerAppendsBatteryOpts(t *testing.T) {
+	defer stubMode(watchdog.ModeLowPower)()
+
+	dir := t.TempDir()
+	vid := filepath.Join(dir, "clip.mp4")
+	if err := os.WriteFile(vid, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Capture the config the backend selector receives. BatteryMpvOpts
+	// must be APPENDED to MpvOpts (so user flags like --mute survive),
+	// not replace it. FpsBattery does replace Fps because lwpe's --fps
+	// is a single scalar.
+	var seen config.Config
+	prev := selectBackend
+	selectBackend = func(_ engine.Target, c config.Config) (engine.Backend, error) {
+		seen = c
+		return &fakeBackend{name: "stub"}, nil
+	}
+	defer func() { selectBackend = prev }()
+
+	cfg := config.Default()
+	cfg.Mpvpaper.MpvOpts = "--mute --loop"
+	cfg.Mpvpaper.BatteryMpvOpts = "--hwdec=auto"
+	cfg.Wpe.Fps = 60
+	cfg.Wpe.FpsBattery = 20
+
+	if _, err := ByInput(cfg, vid); err != nil {
+		t.Fatalf("ByInput: %v", err)
+	}
+	want := "--mute --loop --hwdec=auto"
+	if seen.Mpvpaper.MpvOpts != want {
+		t.Errorf("MpvOpts = %q, want %q", seen.Mpvpaper.MpvOpts, want)
+	}
+	if seen.Wpe.Fps != 20 {
+		t.Errorf("Fps = %d, want 20 (FpsBattery replaces Fps)", seen.Wpe.Fps)
+	}
+}
+
+func TestForLowPower_EmptyOverridesPreserved(t *testing.T) {
+	cfg := config.Default()
+	cfg.Mpvpaper.MpvOpts = "keep-me"
+	cfg.Mpvpaper.BatteryMpvOpts = "" // unset → should not overwrite
+	cfg.Wpe.Fps = 30
+	cfg.Wpe.FpsBattery = 0 // unset → should not overwrite
+
+	out := cfg.ForLowPower()
+	if out.Mpvpaper.MpvOpts != "keep-me" {
+		t.Errorf("MpvOpts = %q, want keep-me (override empty)", out.Mpvpaper.MpvOpts)
+	}
+	if out.Wpe.Fps != 30 {
+		t.Errorf("Fps = %d, want 30 (override 0)", out.Wpe.Fps)
 	}
 }

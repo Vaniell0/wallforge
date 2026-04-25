@@ -16,34 +16,52 @@ import (
 )
 
 func cmdWatchdog(cfg config.Config) error {
-	w := watchdog.New(
-		15*time.Second,
-		func() {
-			// Battery: drop every backend. mpvpaper and lwpe are the
-			// expensive ones; a static swww image is already zero-cost
-			// after load but StopAll handles it uniformly.
-			fmt.Fprintln(os.Stderr, "wallforge watchdog: on battery — stopping backends")
+	policy := watchdog.ParsePolicy(cfg.Watchdog.PowerSaverPolicy)
+
+	w := watchdog.New(15*time.Second, policy, func(mode watchdog.Mode, reason string) {
+		switch mode {
+		case watchdog.ModePaused:
+			fmt.Fprintf(os.Stderr, "wallforge watchdog: paused (%s) — stopping backends\n", reason)
 			for _, e := range engine.StopAll(cfg) {
 				fmt.Fprintf(os.Stderr, "wallforge watchdog: stop: %v\n", e)
 			}
-		},
-		func() {
-			// AC: re-apply the last wallpaper if we have one on record.
-			entry, err := state.Load()
-			if err != nil || entry.Input == "" {
-				return
+		case watchdog.ModeNormal, watchdog.ModeLowPower:
+			// Resume target priority: pending (queued during Paused)
+			// → last-applied. If pending exists, consume it (delete
+			// the file) so the same intent doesn't keep re-firing
+			// every transition.
+			entry, err := state.ConsumePending()
+			pending := entry.Input != ""
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: pending state: %v\n", err)
 			}
-			fmt.Fprintf(os.Stderr, "wallforge watchdog: AC — resuming %s\n", entry.Input)
-			if _, err := apply.ByInput(cfg, entry.Input); err != nil {
-				fmt.Fprintf(os.Stderr, "wallforge watchdog: resume: %v\n", err)
+			if !pending {
+				entry, err = state.Load()
+				if err != nil || entry.Input == "" {
+					return
+				}
 			}
-		},
-	)
+			source := "last"
+			if pending {
+				source = "pending"
+			}
+			if mode == watchdog.ModeLowPower {
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: low-power (%s) — applying %s [%s]\n", reason, entry.Input, source)
+			} else {
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: normal — applying %s [%s]\n", entry.Input, source)
+			}
+			// Pass mode explicitly so apply doesn't re-probe ppd —
+			// avoids the H3 timeout doubling and the M2 race window.
+			if _, err := apply.ByInputForMode(cfg, entry.Input, mode); err != nil {
+				fmt.Fprintf(os.Stderr, "wallforge watchdog: apply: %v\n", err)
+			}
+		}
+	})
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	fmt.Fprintln(os.Stderr, "wallforge: battery watchdog running (15s poll)")
+	fmt.Fprintf(os.Stderr, "wallforge: watchdog running (15s poll, power-saver policy: %s)\n", policy)
 	return w.Run(ctx)
 }

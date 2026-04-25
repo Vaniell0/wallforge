@@ -21,6 +21,7 @@ type WallpaperEngine struct {
 	screen string
 	fpsCap int
 	silent bool
+	nice   int
 }
 
 func NewWallpaperEngine(cfg config.WpeConfig) *WallpaperEngine {
@@ -28,6 +29,7 @@ func NewWallpaperEngine(cfg config.WpeConfig) *WallpaperEngine {
 		screen: cfg.Screen,
 		fpsCap: cfg.Fps,
 		silent: cfg.Silent,
+		nice:   cfg.Nice,
 	}
 }
 
@@ -86,6 +88,13 @@ func (w *WallpaperEngine) Apply(path string) error {
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start linux-wallpaperengine: %w", err)
+	}
+	// PRIO_PGRP, not PRIO_PROCESS: lwpe forks several CEF helpers
+	// (renderer, gpu, utility). PRIO_PROCESS would only renice the
+	// main thread. Setsid in SysProcAttr made child PID == PGID, so
+	// passing the pid here addresses the whole group.
+	if err := setNicePGroup(cmd.Process.Pid, w.nice); err != nil {
+		fmt.Fprintf(os.Stderr, "wallforge lwpe: %v\n", err)
 	}
 	return cmd.Process.Release()
 }

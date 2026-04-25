@@ -19,8 +19,9 @@ is served from the same binary — HTML/JS/CSS are `//go:embed`ed.
 
 `0.1.0-alpha` — image / video / scene backends work end-to-end. Steam
 Workshop integration reads the local Steam install (no proxy services,
-no DMCA-bait). Web-UI, per-workspace daemon, battery watchdog, shell
-completion all wired. [Roadmap](#roadmap) for what's next.
+no DMCA-bait). Web-UI, per-workspace daemon, three-mode power
+watchdog (Normal / LowPower / Paused, ppd-aware), shell completion
+all wired. [Roadmap](#roadmap) for what's next.
 
 ## Who it's for
 
@@ -67,7 +68,7 @@ are great on their own DEs.
               serve.enable = true;       # web-UI at http://127.0.0.1:7777
               resume.enable = true;      # re-apply last wallpaper on login
               workspace.enable = true;   # per-workspace daemon
-              watchdog.enable = true;    # stop backends on battery
+              watchdog.enable = true;    # auto Normal/LowPower/Paused on AC + ppd
             };
           })
         ];

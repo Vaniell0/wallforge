@@ -30,15 +30,22 @@ HM writes out the JSON and links it into `~/.config/wallforge/`.
   },
   "mpvpaper": {
     "target": "*",
-    "mpv_opts": "no-audio --loop-file=inf --panscan=1.0"
+    "mpv_opts": "no-audio --loop-file=inf --panscan=1.0",
+    "battery_mpv_opts": "--hwdec=auto --cache-secs=2 --video-sync=display-vdrop",
+    "nice": 10
   },
   "wpe": {
     "fps": 30,
     "silent": true,
-    "screen": ""
+    "screen": "",
+    "fps_battery": 15,
+    "nice": 10
   },
   "library": {
     "roots": ["~/Pictures/Wallpapers"]
+  },
+  "watchdog": {
+    "power_saver_policy": "reduce"
   }
 }
 ```
@@ -80,30 +87,56 @@ one set to the other.
 
 Forwarded to `mpvpaper -o <mpv_opts> <target> <path>`.
 
-| Field      | Type   | Default                                  | Notes                                   |
-|------------|--------|------------------------------------------|-----------------------------------------|
-| `target`   | string | `"*"`                                    | Output selector. `*` = all. Specific outputs: `eDP-1`, `DP-1`. |
-| `mpv_opts` | string | `"no-audio --loop-file=inf --panscan=1.0"` | Any mpv flag, space-separated. |
+| Field              | Type   | Default                                       | Notes                                                                     |
+|--------------------|--------|-----------------------------------------------|---------------------------------------------------------------------------|
+| `target`           | string | `"*"`                                         | Output selector. `*` = all. Specific outputs: `eDP-1`, `DP-1`.            |
+| `mpv_opts`         | string | `"no-audio --loop-file=inf --panscan=1.0"`    | Any mpv flag, space-separated. Always applied.                            |
+| `battery_mpv_opts` | string | `"--hwdec=auto --cache-secs=2 --video-sync=display-vdrop"` | Appended to `mpv_opts` in LowPower mode. Empty = no extra flags. |
+| `nice`             | int    | `10`                                          | Process group niceness applied after spawn. 0 = no adjustment.            |
+
+`battery_mpv_opts` is **appended**, not substituted — your base flags
+(e.g. `--mute`) survive. mpv reads options left-to-right, so colliding
+keys resolve to the battery side, e.g. `--cache-secs=2` from battery
+opts wins over a `--cache-secs=10` in `mpv_opts`.
 
 Common tweaks:
 
 ```json
-"mpv_opts": "no-audio --loop-file=inf --panscan=1.0 --hwdec=auto"
+"mpvpaper": {
+  "mpv_opts": "no-audio --loop-file=inf --panscan=1.0 --hwdec=auto",
+  "battery_mpv_opts": "--cache-secs=1 --vo=null"
+}
 ```
-
-Add `--hwdec=auto` if mpvpaper is pegging the CPU on high-res videos —
-your GPU can almost always help.
 
 ### `wpe` (Wallpaper Engine / `linux-wallpaperengine`)
 
-| Field    | Type    | Default | Notes                                             |
-|----------|---------|---------|---------------------------------------------------|
-| `fps`    | int     | `30`    | Target FPS. Lower saves battery.                  |
-| `silent` | boolean | `true`  | Mute scene audio.                                 |
-| `screen` | string  | `""`    | Output name. Empty = first output.                |
+| Field         | Type    | Default | Notes                                             |
+|---------------|---------|---------|---------------------------------------------------|
+| `fps`         | int     | `30`    | Target FPS at Normal mode.                        |
+| `silent`      | boolean | `true`  | Mute scene audio.                                 |
+| `screen`      | string  | `""`    | Output name. Empty = first output.                |
+| `fps_battery` | int     | `15`    | Replaces `fps` in LowPower mode. 0 = keep `fps`.  |
+| `nice`        | int     | `10`    | Process group niceness. Catches CEF helpers too.  |
 
-`fps: 20` on battery-heavy scenes is usually plenty. `fps: 60` is
-noticeable on particle-heavy content if you're on mains power.
+`fps: 60` on AC, `fps_battery: 15` on power-saver — common split for
+particle-heavy WE scenes. lwpe's `--fps` is a single scalar so this
+*replaces* (not appends).
+
+### `watchdog`
+
+| Field                 | Type   | Default    | Notes                                                          |
+|-----------------------|--------|------------|----------------------------------------------------------------|
+| `power_saver_policy`  | string | `"reduce"` | What to do on AC + ppd power-saver. `reduce` / `pause` / `ignore`. |
+
+Battery → Paused is hardcoded (always pause on battery). The policy
+only affects the AC + power-saver corner:
+
+- `reduce` (default) — drop into LowPower: re-apply with
+  `battery_mpv_opts` appended and `fps_battery` substituted.
+- `pause` — full stop, like on battery.
+- `ignore` — keep running at Normal quality regardless of profile.
+
+Anything else (typo, unknown value) silently falls back to `reduce`.
 
 ### `library`
 
@@ -136,9 +169,14 @@ them manually — systemd/the shell already export them.
 | Var               | Used for                                          |
 |-------------------|---------------------------------------------------|
 | `XDG_CONFIG_HOME` | config location (fallback `~/.config`)            |
-| `XDG_STATE_HOME`  | `last.json` + `workspaces.json` (fallback `~/.local/state`) |
+| `XDG_STATE_HOME`  | `last.json`, `pending.json`, `workspaces.json` (fallback `~/.local/state`) |
 | `XDG_RUNTIME_DIR` | Hyprland event socket lookup (workspace daemon)   |
 | `HYPRLAND_INSTANCE_SIGNATURE` | Hyprland socket path piece              |
+
+`pending.json` exists only while a Paused-mode `wallforge apply` (or
+web-UI Apply) has queued a wallpaper for the next resume. The
+watchdog and `wallforge resume` consume it (delete it on success);
+the next resume after a successful render reads `last.json` again.
 
 ## Home Manager options (all opt-in)
 

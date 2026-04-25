@@ -24,6 +24,7 @@ type Config struct {
 	Mpvpaper MpvpaperConfig `json:"mpvpaper"`
 	Wpe      WpeConfig      `json:"wpe"`
 	Library  LibraryConfig  `json:"library"`
+	Watchdog WatchdogConfig `json:"watchdog"`
 }
 
 type SteamConfig struct {
@@ -41,18 +42,48 @@ type SwwwConfig struct {
 type MpvpaperConfig struct {
 	Target  string `json:"target"`
 	MpvOpts string `json:"mpv_opts"`
+	// BatteryMpvOpts is appended to MpvOpts when the watchdog reports
+	// LowPower (AC + ppd power-saver, by default). Empty = leave
+	// MpvOpts unchanged in LowPower. mpv processes options
+	// left-to-right so later flags override earlier ones — meaning
+	// "--cache-secs=2" in BatteryMpvOpts wins over a "--cache-secs=10"
+	// in MpvOpts. The user's base opts (e.g. "--mute") survive.
+	BatteryMpvOpts string `json:"battery_mpv_opts"`
+	// Nice is the scheduling priority adjustment applied after the
+	// mpvpaper process is spawned. Positive values lower its CPU
+	// priority so the foreground stays snappy; 0 disables the call.
+	Nice int `json:"nice"`
 }
 
 type WpeConfig struct {
 	Fps    int    `json:"fps"`
 	Silent bool   `json:"silent"`
 	Screen string `json:"screen"`
+	// FpsBattery overrides Fps in LowPower mode. 0 = keep Fps.
+	FpsBattery int `json:"fps_battery"`
+	// Nice — see MpvpaperConfig.Nice. lwpe is the heaviest backend
+	// (full GL scene); a polite default keeps a CPU-bound build
+	// from stuttering when a wallpaper happens to spike.
+	Nice int `json:"nice"`
 }
 
 // LibraryConfig tells the scanner which local directories to index as
 // wallpaper sources. Leading "~/" is expanded at scan time.
 type LibraryConfig struct {
 	Roots []string `json:"roots"`
+}
+
+// WatchdogConfig tunes the auto-pause behaviour. Battery → ModePaused
+// is hardcoded; PowerSaverPolicy chooses what to do on AC + ppd
+// power-saver. Allowed values:
+//
+//	"reduce"  — drop into LowPower mode (battery_mpv_opts, fps_battery)
+//	"pause"   — full stop, like on battery
+//	"ignore"  — keep running at Normal quality
+//
+// Anything else falls back to "reduce".
+type WatchdogConfig struct {
+	PowerSaverPolicy string `json:"power_saver_policy"`
 }
 
 // Default returns the built-in configuration. Every field here is also
@@ -64,17 +95,49 @@ func Default() Config {
 			Duration:   "1.5",
 		},
 		Mpvpaper: MpvpaperConfig{
-			Target:  "*",
-			MpvOpts: "no-audio --loop-file=inf --panscan=1.0",
+			Target: "*",
+			// Base opts always apply. Battery opts are appended in
+			// LowPower — kept slim because they only add tweaks, not
+			// duplicate the base. mpv reads left-to-right so later
+			// flags win when keys collide.
+			MpvOpts:        "no-audio --loop-file=inf --panscan=1.0",
+			BatteryMpvOpts: "--hwdec=auto --cache-secs=2 --video-sync=display-vdrop",
+			Nice:           10,
 		},
 		Wpe: WpeConfig{
-			Fps:    30,
-			Silent: true,
+			Fps:        30,
+			Silent:     true,
+			FpsBattery: 15,
+			Nice:       10,
 		},
 		Library: LibraryConfig{
 			Roots: []string{"~/Pictures/Wallpapers"},
 		},
+		Watchdog: WatchdogConfig{
+			PowerSaverPolicy: "reduce",
+		},
 	}
+}
+
+// ForLowPower returns a Config with the LowPower-mode overrides
+// applied. BatteryMpvOpts is *appended* to MpvOpts so the user's base
+// flags survive (e.g. "--mute" stays in effect even when battery opts
+// add hwdec). FpsBattery replaces Fps wholesale because lwpe's --fps
+// is a single value, not composable. Empty / zero overrides leave
+// the original untouched.
+func (c Config) ForLowPower() Config {
+	out := c
+	if c.Mpvpaper.BatteryMpvOpts != "" {
+		if c.Mpvpaper.MpvOpts == "" {
+			out.Mpvpaper.MpvOpts = c.Mpvpaper.BatteryMpvOpts
+		} else {
+			out.Mpvpaper.MpvOpts = c.Mpvpaper.MpvOpts + " " + c.Mpvpaper.BatteryMpvOpts
+		}
+	}
+	if c.Wpe.FpsBattery > 0 {
+		out.Wpe.Fps = c.Wpe.FpsBattery
+	}
+	return out
 }
 
 // Path returns the location of the user config file.
